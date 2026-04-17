@@ -8,15 +8,19 @@ The skill auto-activates when you say "siftr", "triage my email", etc.
 
 ## Quick Start
 
-1. Launch Copilot in the `copilot-home` directory
-2. Type **`siftr`** to begin — if this is your first time, `siftr setup`
+1. Clone and install: `git clone https://github.com/iclegrow/siftr.git && cd siftr && .\install.ps1`
+2. Launch Copilot in the `siftr` directory
+3. Type **`siftr`** to begin — if this is your first time, `siftr setup`
    runs automatically to configure your personal data path, org context,
    folder preferences, and category names
-3. Review the prioritized briefing in the terminal
-4. Use Outlook categories such as **Urgent**, **Action**, and **Inform** to
+4. Review the prioritized briefing in the terminal
+5. Use Outlook categories such as **Urgent**, **Action**, and **Inform** to
    filter the triaged mail
-5. Open the review UI at `http://localhost:8473` to override classifications
-6. Say **`siftr learn`** to build personal rules from your corrections
+6. Open the review UI at `http://localhost:8473` to override classifications
+7. Say **`siftr learn`** to build personal rules from your corrections
+
+📖 **New user?** See the [Getting Started Guide](docs/getting-started.md) for
+a detailed walkthrough from zero to first triage.
 
 ## Commands
 
@@ -139,7 +143,7 @@ Override any classification you disagree with using the dropdown, add optional
 notes, then click **Save**. When you're done reviewing, say `siftr learn` in
 the CLI to process your corrections and update the priority rules.
 
-The review server code lives in `siftr/review-server/` (zero-dependency
+The review server code lives in `review-server/` (zero-dependency
 Node.js).
 
 ## Requirements
