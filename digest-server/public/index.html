@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Siftr · Daily Digest</title>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep: #060a13;
+      --bg-surface: #0f1521;
+      --bg-card: #141c2b;
+      --bg-card-hover: #1a2438;
+      --bg-expanded: #10172299;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border: #1e293b;
+      --border-light: #334155;
+      --accent: #22d3ee;
+      --green: #10b981;
+      --green-bg: #065f4620;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --blue-bg: rgba(59, 130, 246, 0.10);
+      --tier-urgent: #ef4444;
+      --tier-action: #f59e0b;
+      --tier-priority: #10b981;
+      --tier-informed: #34d399;
+      --tier-calendar: #3b82f6;
+      --tier-low: #64748b;
+      --font-display: 'Chakra Petch', sans-serif;
+      --font-body: 'Outfit', sans-serif;
+      --radius: 8px;
+    }
+
+    html { font-size: 16px; }
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* === HEADER === */
+    .header {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 28px;
+      background: #0a0f1acc;
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+    .header-left { display: flex; align-items: center; gap: 24px; }
+    .logo {
+      font-family: var(--font-display);
+      display: flex; align-items: baseline; gap: 10px;
+    }
+    .logo-name {
+      font-size: 1.3rem; font-weight: 700; color: var(--text-primary);
+      letter-spacing: 0.5px;
+    }
+    .logo-title {
+      font-size: 1.15rem; font-weight: 700; letter-spacing: 2px;
+      color: var(--accent);
+    }
+    .header-stats { display: flex; gap: 18px; font-size: 0.85rem; color: var(--text-secondary); }
+    .stat-value { font-weight: 600; color: var(--text-primary); }
+    .stat-value.marked { color: var(--green); }
+
+    .header-right { display: flex; align-items: center; gap: 20px; }
+    .window-label {
+      font-size: 0.8rem; color: var(--text-muted);
+      font-family: var(--font-display); letter-spacing: 0.5px;
+    }
+
+    /* Save status */
+    .save-status {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.8rem; padding: 4px 12px;
+      border-radius: 20px; transition: all 0.3s;
+    }
+    .save-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      transition: background 0.3s;
+    }
+    .save-status.idle .save-dot { background: var(--text-muted); }
+    .save-status.idle { color: var(--text-muted); }
+    .save-status.saving .save-dot { background: var(--amber); animation: pulse 0.8s infinite; }
+    .save-status.saving { color: var(--amber); }
+    .save-status.saved .save-dot { background: var(--green); }
+    .save-status.saved { color: var(--green); }
+    .save-status.error .save-dot { background: var(--red); }
+    .save-status.error { color: var(--red); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* === CONTROLS === */
+    .controls {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 28px; gap: 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+    .controls-left { display: flex; align-items: center; gap: 14px; }
+    .filter-toggle {
+      display: flex; align-items: center; gap: 8px;
+      font-family: var(--font-display); font-size: 0.78rem;
+      font-weight: 600; letter-spacing: 0.5px;
+      padding: 5px 14px; border-radius: 6px;
+      border: 1px solid var(--border-light);
+      background: transparent; color: var(--text-secondary);
+      cursor: pointer; transition: all 0.2s; user-select: none;
+    }
+    .filter-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    .filter-toggle.active {
+      border-color: var(--accent); color: var(--accent);
+      background: rgba(34, 211, 238, 0.08);
+    }
+    .filter-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted); transition: background 0.2s;
+    }
+    .filter-toggle.active .filter-dot { background: var(--accent); }
+    .search-box input {
+      background: var(--bg-card); border: 1px solid var(--border);
+      color: var(--text-primary); font-family: var(--font-body);
+      padding: 7px 14px; border-radius: 6px; font-size: 0.9rem;
+      width: 240px; outline: none; transition: border-color 0.2s;
+    }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-box input::placeholder { color: var(--text-muted); }
+
+    /* === MAIN CONTENT === */
+    .digest-content {
+      max-width: 920px; margin: 0 auto;
+      padding: 20px 28px 60px;
+    }
+
+    /* === TIER SECTIONS === */
+    .tier-section { margin-bottom: 8px; }
+    .tier-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 4px; cursor: pointer;
+      user-select: none; transition: opacity 0.2s;
+    }
+    .tier-header:hover { opacity: 0.85; }
+    .tier-icon { font-size: 1.1rem; }
+    .tier-label {
+      font-family: var(--font-display); font-weight: 600;
+      font-size: 0.85rem; letter-spacing: 1.5px;
+    }
+    .tier-count {
+      font-size: 0.75rem; color: var(--text-muted);
+      background: var(--bg-card); padding: 2px 8px; border-radius: 10px;
+      font-family: var(--font-display);
+    }
+    .tier-chevron {
+      margin-left: auto; font-size: 0.7rem; color: var(--text-muted);
+      transition: transform 0.25s;
+    }
+    .tier-section.collapsed .tier-chevron { transform: rotate(-90deg); }
+    .tier-tiles { overflow: hidden; transition: max-height 0.35s ease; }
+    .tier-section.collapsed .tier-tiles { max-height: 0 !important; }
+
+    /* === TILES === */
+    .tile {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--tile-accent, var(--text-muted));
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      transition: border-color 0.2s, background 0.2s, opacity 0.3s;
+      overflow: hidden;
+    }
+    .tile:hover { background: var(--bg-card-hover); border-color: var(--border-light); }
+    .tile.marked-read { opacity: 0.5; }
+    .tile.marked-read:hover { opacity: 0.7; }
+    /* Read emails: desaturated left border, slightly dimmed */
+    .tile.is-read {
+      border-left-color: color-mix(in srgb, var(--tile-accent) 25%, var(--border));
+      opacity: 0.65;
+    }
+    .tile.is-read:hover { opacity: 0.8; }
+    .tile.is-read.marked-read { opacity: 0.4; }
+
+    .tile-main {
+      padding: 14px 18px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .tile-top {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .tier-badge {
+      font-family: var(--font-display); font-size: 0.7rem; font-weight: 600;
+      letter-spacing: 1px; padding: 2px 8px; border-radius: 4px;
+      color: var(--badge-fg, #fff);
+      background: var(--badge-bg, #333);
+    }
+    .addr-badge {
+      font-family: var(--font-display); font-size: 0.6rem; font-weight: 600;
+      letter-spacing: 1px; padding: 2px 6px; border-radius: 3px;
+      border: 1px solid var(--text-muted); color: var(--text-muted);
+    }
+    .addr-badge.to { border-color: var(--accent); color: var(--accent); }
+    .addr-badge.cc { border-color: var(--amber); color: var(--amber); }
+    .addr-badge.dl { border-color: var(--text-muted); }
+    .thread-badge {
+      font-family: var(--font-display); font-size: 0.6rem; font-weight: 600;
+      letter-spacing: 0.5px; padding: 2px 6px; border-radius: 3px;
+      background: rgba(99, 102, 241, 0.15); color: #818cf8;
+    }
+    .tile-time {
+      font-size: 0.75rem; color: var(--text-muted);
+      margin-left: auto; white-space: nowrap;
+    }
+
+    .tile-subject {
+      font-weight: 600; font-size: 1rem; color: var(--text-primary);
+      line-height: 1.3;
+    }
+    .tile-sender {
+      font-size: 0.85rem; color: var(--text-secondary);
+    }
+    .tile-summary {
+      font-size: 0.88rem; color: var(--text-secondary);
+      line-height: 1.55;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .tile-footer {
+      display: flex; align-items: center; justify-content: flex-end;
+      padding: 0 18px 12px; gap: 8px;
+    }
+
+    /* Read/Unread toggle button */
+    .btn-read-toggle {
+      font-family: var(--font-display); font-size: 0.72rem;
+      font-weight: 600; letter-spacing: 0.5px;
+      padding: 5px 14px; border-radius: 6px;
+      border: 1px solid; cursor: pointer;
+      transition: all 0.2s; position: relative;
+    }
+    /* Unread state — blue, prominent */
+    .btn-read-toggle.unread {
+      border-color: var(--blue); color: var(--blue);
+      background: var(--blue-bg);
+    }
+    .btn-read-toggle.unread:hover {
+      background: rgba(59, 130, 246, 0.18);
+    }
+    /* Read state — grey, subdued */
+    .btn-read-toggle.read {
+      border-color: var(--border-light); color: var(--text-muted);
+      background: transparent;
+    }
+    .btn-read-toggle.read:hover {
+      border-color: var(--text-secondary); color: var(--text-secondary);
+      background: rgba(100, 116, 139, 0.08);
+    }
+
+    /* Open in Outlook button */
+    .btn-open-email {
+      font-family: var(--font-display); font-size: 0.72rem;
+      font-weight: 600; letter-spacing: 0.5px;
+      padding: 5px 14px; border-radius: 6px;
+      border: 1px solid var(--border-light); cursor: pointer;
+      transition: all 0.2s; color: var(--text-secondary);
+      background: transparent;
+    }
+    .btn-open-email:hover {
+      border-color: var(--amber); color: var(--amber);
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    /* Expanded content */
+    .tile-expanded {
+      max-height: 0; overflow: hidden;
+      transition: max-height 0.35s ease;
+    }
+    .expanded-inner {
+      padding: 0 18px 16px;
+      border-top: 1px solid var(--border);
+      margin-top: 4px;
+    }
+    .expanded-label {
+      font-family: var(--font-display); font-size: 0.7rem;
+      letter-spacing: 1.5px; color: var(--text-muted);
+      margin: 12px 0 8px; font-weight: 600;
+    }
+    .expanded-content {
+      font-size: 0.9rem; line-height: 1.7; color: var(--text-secondary);
+    }
+    .expanded-content ul, .expanded-content ol {
+      margin: 6px 0; padding-left: 22px;
+    }
+    .expanded-content li { margin: 4px 0; }
+    .expanded-content strong { color: var(--text-primary); font-weight: 600; }
+    .expanded-content mark {
+      background: rgba(34, 211, 238, 0.12); color: var(--accent);
+      padding: 1px 5px; border-radius: 3px; font-style: normal;
+    }
+    .expanded-content em { color: var(--amber); font-style: normal; }
+
+    /* Action text field in expanded tile */
+    .action-field-wrap {
+      margin-top: 14px; padding-top: 12px;
+      border-top: 1px dashed var(--border);
+    }
+    .action-label {
+      font-family: var(--font-display); font-size: 0.68rem;
+      letter-spacing: 1.5px; color: var(--amber);
+      margin-bottom: 6px; font-weight: 600;
+    }
+    .action-input {
+      width: 100%;
+      background: var(--bg-deep); border: 1px solid var(--border);
+      color: var(--text-primary); font-family: var(--font-body);
+      font-size: 0.88rem; padding: 8px 12px;
+      border-radius: 6px; outline: none;
+      transition: border-color 0.2s;
+    }
+    .action-input:focus { border-color: var(--amber); }
+    .action-input::placeholder { color: var(--text-muted); font-size: 0.82rem; }
+
+    /* === EMPTY STATE === */
+    .empty-state {
+      text-align: center; padding: 60px 20px; color: var(--text-muted);
+    }
+    .empty-state .empty-icon { font-size: 3rem; margin-bottom: 12px; }
+    .empty-state h2 { font-family: var(--font-display); font-size: 1.1rem; color: var(--text-secondary); }
+
+    /* === TOAST === */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      padding: 10px 20px; border-radius: 8px; font-size: 0.85rem;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none;
+      background: var(--bg-card); border: 1px solid var(--border);
+      color: var(--text-primary); z-index: 200;
+    }
+    .toast.visible { opacity: 1; }
+
+    /* === LOADING === */
+    .loading {
+      display: flex; align-items: center; justify-content: center;
+      height: 60vh; color: var(--text-muted); font-size: 1rem;
+    }
+    .loading::after {
+      content: ''; width: 20px; height: 20px; margin-left: 12px;
+      border: 2px solid var(--border-light); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* === ANIMATIONS === */
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .tile { animation: fadeSlideIn 0.3s ease both; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-deep); }
+    ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header-left">
+        <h1 class="logo">
+          <span class="logo-name" id="logoName">☀️ Your</span>
+          <span class="logo-title">DAILY DIGEST</span>
+        </h1>
+        <div id="headerStats" class="header-stats"></div>
+      </div>
+      <div class="header-right">
+        <div class="window-label" id="windowLabel"></div>
+        <div id="saveStatus" class="save-status idle">
+          <span class="save-dot"></span>
+          <span id="saveText">All synced</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="controls">
+      <div class="controls-left">
+        <button class="filter-toggle active" id="showReadToggle" onclick="App.toggleShowRead()">
+          <span class="filter-dot"></span>
+          <span id="showReadLabel">Show Read</span>
+        </button>
+      </div>
+      <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Search subject, sender…" />
+      </div>
+    </div>
+
+    <main id="digestContent" class="digest-content">
+      <div class="loading">Loading digest</div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const TIER_CONFIG = {
+      'URGENT':            { icon: '🔴', color: '#ef4444', label: 'URGENT', order: 0,
+                             badgeBg: '#7f1d1d', badgeFg: '#fca5a5' },
+      'URGENT ACTION':     { icon: '🔴', color: '#ef4444', label: 'URGENT ACTION', order: 0,
+                             badgeBg: '#7f1d1d', badgeFg: '#fca5a5' },
+      'ACTION NEEDED':     { icon: '🟠', color: '#f59e0b', label: 'ACTION NEEDED', order: 1,
+                             badgeBg: '#78350f', badgeFg: '#fcd34d' },
+      'BACKGROUND FYI':    { icon: '🟡', color: '#eab308', label: 'BACKGROUND FYI', order: 2,
+                             badgeBg: '#713f12', badgeFg: '#fde68a' },
+      'PRIORITY INFORMED': { icon: '🟢', color: '#10b981', label: 'PRIORITY INFORMED', order: 3,
+                             badgeBg: '#064e3b', badgeFg: '#6ee7b7' },
+      'INFORMED':          { icon: '🟢', color: '#34d399', label: 'INFORMED', order: 4,
+                             badgeBg: '#064e3b', badgeFg: '#6ee7b7' },
+      'CALENDAR':          { icon: '📅', color: '#3b82f6', label: 'CALENDAR', order: 5,
+                             badgeBg: '#1e3a5f', badgeFg: '#93c5fd' },
+      'LOW PRIORITY':      { icon: '⚪', color: '#64748b', label: 'LOW PRIORITY', order: 6,
+                             badgeBg: '#1e293b', badgeFg: '#94a3b8' },
+    };
+
+    function tierKey(raw) {
+      return (raw || '').replace(/^[^\w]+/, '').trim().toUpperCase();
+    }
+
+    function formatTime(iso) {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+
+    // -----------------------------------------------------------------------
+    const App = {
+      data: null,
+      expandedTiles: new Set(),
+      collapsedTiers: new Set(),
+      saveTimer: null,
+      searchQuery: '',
+      showRead: true,
+
+      async init() {
+        try {
+          const res = await fetch('/api/data');
+          this.data = await res.json();
+        } catch (e) {
+          document.getElementById('digestContent').innerHTML =
+            '<div class="empty-state"><div class="empty-icon">⚠️</div><h2>Could not load digest data</h2></div>';
+          return;
+        }
+        // Set user name in logo
+        const name = this.data.userName || 'Your';
+        const possessive = name.toLowerCase() === 'your' ? name : `${name}'s`;
+        document.getElementById('logoName').textContent = `☀️ ${possessive}`;
+        document.title = `${possessive} Daily Digest`;
+
+        document.getElementById('windowLabel').textContent = this.data.window || '';
+        this.render();
+        this.updateStats();
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+          this.searchQuery = e.target.value.toLowerCase();
+          this.render();
+        });
+      },
+
+      getFiltered() {
+        let emails = this.data.emails.filter(e => tierKey(e.tier) !== 'LOW PRIORITY');
+        if (!this.showRead) {
+          emails = emails.filter(e => !e.isRead || e.markRead);
+        }
+        if (this.searchQuery) {
+          emails = emails.filter(e =>
+            (e.subject || '').toLowerCase().includes(this.searchQuery) ||
+            ((e.from && e.from.name) || '').toLowerCase().includes(this.searchQuery) ||
+            (e.summaryShort || '').toLowerCase().includes(this.searchQuery)
+          );
+        }
+        return emails;
+      },
+
+      groupByTier(emails) {
+        const groups = {};
+        for (const e of emails) {
+          const k = tierKey(e.tier);
+          if (!groups[k]) groups[k] = [];
+          groups[k].push(e);
+        }
+        // Sort groups by tier order
+        const sorted = Object.entries(groups).sort((a, b) => {
+          const oa = (TIER_CONFIG[a[0]] || {}).order ?? 99;
+          const ob = (TIER_CONFIG[b[0]] || {}).order ?? 99;
+          return oa - ob;
+        });
+        return sorted;
+      },
+
+      render() {
+        const container = document.getElementById('digestContent');
+        const emails = this.getFiltered();
+
+        if (emails.length === 0) {
+          container.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><h2>No emails match your search</h2></div>';
+          return;
+        }
+
+        const groups = this.groupByTier(emails);
+        let html = '';
+
+        for (const [key, items] of groups) {
+          const cfg = TIER_CONFIG[key] || { icon: '📧', color: '#64748b', label: key, badgeBg: '#1e293b', badgeFg: '#94a3b8' };
+          const collapsed = this.collapsedTiers.has(key);
+          // URGENT gets a red accent override
+          const isUrgent = key === 'URGENT ACTION' || key === 'URGENT';
+
+          html += `<div class="tier-section${collapsed ? ' collapsed' : ''}" data-tier="${key}">`;
+          html += `<div class="tier-header" onclick="App.toggleTier('${key}')">
+            <span class="tier-icon">${cfg.icon}</span>
+            <span class="tier-label" style="color:${cfg.color}">${cfg.label}</span>
+            <span class="tier-count">${items.length}</span>
+            <span class="tier-chevron">▼</span>
+          </div>`;
+          html += `<div class="tier-tiles" style="max-height:${collapsed ? 0 : items.length * 400}px">`;
+
+          for (let i = 0; i < items.length; i++) {
+            const e = items[i];
+            const expanded = this.expandedTiles.has(e.id);
+            const isMarked = e.markRead === true;
+            const isRead = e.isRead === true;
+            const classes = ['tile'];
+            if (isMarked) classes.push('marked-read');
+            if (isRead && !isMarked) classes.push('is-read');
+
+            const addrClass = (e.addressed || 'to').toLowerCase();
+            const addrLabel = addrClass === 'dl' ? 'DL' : addrClass.toUpperCase();
+
+            // Use red accent for URGENT tiles
+            const accentColor = isUrgent ? 'var(--red)' : cfg.color;
+
+            html += `<div class="${classes.join(' ')}" style="--tile-accent:${accentColor}; animation-delay:${i * 0.04}s" data-id="${e.id}">`;
+            html += `<div class="tile-main" onclick="App.toggleExpand('${e.id}')">`;
+
+            // Top row: badge, addressing, thread count, time
+            html += `<div class="tile-top">`;
+            html += `<span class="tier-badge" style="--badge-bg:${cfg.badgeBg};--badge-fg:${cfg.badgeFg}">${cfg.icon} ${e.priority || ''}</span>`;
+            html += `<span class="addr-badge ${addrClass}">${addrLabel}</span>`;
+            if (e.threadCount > 1) html += `<span class="thread-badge">${e.threadCount} in thread</span>`;
+            html += `<span class="tile-time">${formatTime(e.date)}</span>`;
+            html += `</div>`;
+
+            // Subject
+            html += `<div class="tile-subject">${this.esc(e.subject)}</div>`;
+
+            // Sender
+            html += `<div class="tile-sender">From: ${this.esc(e.from.name)}</div>`;
+
+            // Short summary
+            if (e.summaryShort) {
+              html += `<div class="tile-summary">${this.esc(e.summaryShort)}</div>`;
+            }
+
+            html += `</div>`; // .tile-main
+
+            // Footer with read/unread toggle — all emails get a button
+            const btnClass = isMarked ? 'read' : (isRead ? 'read' : 'unread');
+            const btnLabel = isMarked ? '✓ Marked as Read' : (isRead ? '📖 Read' : '📩 Unread');
+            html += `<div class="tile-footer">`;
+            html += `<button class="btn-open-email" onclick="event.stopPropagation(); App.openEmail('${e.id}')" title="Open in Outlook">📧 Open</button>`;
+            html += `<button class="btn-read-toggle ${btnClass}" onclick="event.stopPropagation(); App.toggleMarkRead('${e.id}')">`;
+            html += btnLabel;
+            html += `</button></div>`;
+
+            // Expanded content
+            html += `<div class="tile-expanded" id="exp-${e.id}" style="max-height:${expanded ? 'none' : '0'}">`;
+            html += `<div class="expanded-inner">`;
+            html += `<div class="expanded-label">FULL SUMMARY</div>`;
+            html += `<div class="expanded-content">${e.summaryFull || '<em>No expanded summary available</em>'}</div>`;
+
+            // Action text field
+            const actionVal = this.esc(e.actionText || '');
+            html += `<div class="action-field-wrap">`;
+            html += `<div class="action-label">⚡ ACTION</div>`;
+            html += `<input class="action-input" type="text" placeholder="e.g. Create a to-do, Reply thanks for the update…" value="${actionVal}" data-action-id="${e.id}" onchange="App.setAction('${e.id}', this.value)" oninput="App.setAction('${e.id}', this.value)" />`;
+            html += `</div>`;
+
+            html += `</div></div>`;
+
+            html += `</div>`; // .tile
+          }
+
+          html += `</div></div>`; // .tier-tiles, .tier-section
+        }
+
+        container.innerHTML = html;
+      },
+
+      esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s || '';
+        return d.innerHTML;
+      },
+
+      toggleExpand(id) {
+        const el = document.getElementById(`exp-${id}`);
+        if (!el) return;
+
+        if (this.expandedTiles.has(id)) {
+          // Collapse: snapshot current height, then animate to 0
+          this.expandedTiles.delete(id);
+          el.style.maxHeight = el.scrollHeight + 'px';
+          requestAnimationFrame(() => { el.style.maxHeight = '0'; });
+        } else {
+          // Expand: animate to scrollHeight, then remove limit
+          this.expandedTiles.add(id);
+          el.style.maxHeight = el.scrollHeight + 'px';
+          const onEnd = () => {
+            el.style.maxHeight = 'none';
+            el.removeEventListener('transitionend', onEnd);
+          };
+          el.addEventListener('transitionend', onEnd);
+        }
+      },
+
+      toggleTier(key) {
+        if (this.collapsedTiers.has(key)) {
+          this.collapsedTiers.delete(key);
+        } else {
+          this.collapsedTiers.add(key);
+        }
+        const section = document.querySelector(`.tier-section[data-tier="${key}"]`);
+        if (section) {
+          section.classList.toggle('collapsed');
+          const tiles = section.querySelector('.tier-tiles');
+          if (this.collapsedTiers.has(key)) {
+            tiles.style.maxHeight = '0';
+          } else {
+            tiles.style.maxHeight = (tiles.scrollHeight) + 'px';
+          }
+        }
+      },
+
+      toggleMarkRead(id) {
+        const email = this.data.emails.find(e => e.id === id);
+        if (!email) return;
+        email.markRead = !email.markRead;
+
+        // Update the tile visually without full re-render
+        const tile = document.querySelector(`.tile[data-id="${id}"]`);
+        const btn = tile?.querySelector('.btn-read-toggle');
+        if (tile && btn) {
+          tile.classList.toggle('marked-read', email.markRead);
+          // If was already read, toggle between is-read and marked-read
+          if (email.isRead) {
+            tile.classList.toggle('is-read', !email.markRead);
+          }
+          if (email.markRead) {
+            btn.className = 'btn-read-toggle read';
+            btn.textContent = '✓ Marked as Read';
+          } else {
+            btn.className = email.isRead ? 'btn-read-toggle read' : 'btn-read-toggle unread';
+            btn.textContent = email.isRead ? '📖 Read' : '📩 Unread';
+          }
+        }
+
+        this.updateStats();
+        this.scheduleAutoSave();
+      },
+
+      toggleShowRead() {
+        this.showRead = !this.showRead;
+        const btn = document.getElementById('showReadToggle');
+        const label = document.getElementById('showReadLabel');
+        btn.classList.toggle('active', this.showRead);
+        label.textContent = this.showRead ? 'Show Read' : 'Hide Read';
+        this.render();
+      },
+
+      setAction(id, value) {
+        const email = this.data.emails.find(e => e.id === id);
+        if (!email) return;
+        email.actionText = value;
+        this.scheduleAutoSave();
+      },
+
+      async openEmail(id) {
+        const email = this.data.emails.find(e => e.id === id);
+        if (!email) return;
+        const btn = document.querySelector(`.tile[data-id="${id}"] .btn-open-email`);
+        if (btn) { btn.textContent = '⏳ Opening…'; btn.disabled = true; }
+        try {
+          const res = await fetch('/api/open-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ internetMessageId: email.internetMessageId })
+          });
+          const data = await res.json();
+          if (btn) {
+            btn.textContent = data.result === 'opened' ? '✓ Opened' : '⚠ Not found';
+            setTimeout(() => { btn.textContent = '📧 Open'; btn.disabled = false; }, 2000);
+          }
+        } catch (e) {
+          if (btn) { btn.textContent = '⚠ Error'; setTimeout(() => { btn.textContent = '📧 Open'; btn.disabled = false; }, 2000); }
+        }
+      },
+
+      updateStats() {
+        const total = this.data.emails.length;
+        const unread = this.data.emails.filter(e => !e.isRead).length;
+        const marked = this.data.emails.filter(e => e.markRead).length;
+        document.getElementById('headerStats').innerHTML = `
+          <span class="stat"><span class="stat-value">${total}</span> emails</span>
+          <span class="stat"><span class="stat-value">${unread}</span> unread</span>
+          <span class="stat"><span class="stat-value marked">${marked}</span> marked</span>
+        `;
+      },
+
+      setSaveStatus(state, text) {
+        const el = document.getElementById('saveStatus');
+        const t = document.getElementById('saveText');
+        el.className = `save-status ${state}`;
+        t.textContent = text;
+      },
+
+      scheduleAutoSave() {
+        if (this.saveTimer) clearTimeout(this.saveTimer);
+        this.setSaveStatus('saving', 'Saving…');
+        this.saveTimer = setTimeout(() => this.doSave(), 400);
+      },
+
+      async doSave() {
+        try {
+          const res = await fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emails: this.data.emails })
+          });
+          const result = await res.json();
+          if (result.ok) {
+            this.setSaveStatus('saved', 'Saved ✓');
+          } else {
+            throw new Error(result.error || 'Save failed');
+          }
+        } catch (err) {
+          this.setSaveStatus('error', 'Save failed');
+        }
+      },
+    };
+
+    App.init();
+  </script>
+</body>
+</html>

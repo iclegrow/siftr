@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Siftr Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep: #08080d;
+      --bg-surface: #0f0f16;
+      --bg-elevated: #16161f;
+      --bg-hover: #1e1e2a;
+      --bg-modified: #1a1824;
+      --border: #252535;
+      --border-focus: #4a4a68;
+      --text-primary: #e4e4ee;
+      --text-secondary: #8a8aa2;
+      --text-dim: #52526a;
+      --accent: #818cf8;
+      --accent-hover: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.12);
+      --save-green: #34d399;
+      --save-glow: rgba(52, 211, 153, 0.15);
+
+      --tier-urgent: #ef4444;
+      --tier-urgent-bg: rgba(239, 68, 68, 0.1);
+      --tier-action: #fb923c;
+      --tier-action-bg: rgba(251, 146, 60, 0.1);
+      --tier-priority-info: #2dd4bf;
+      --tier-priority-info-bg: rgba(45, 212, 191, 0.1);
+      --tier-informed: #4ade80;
+      --tier-informed-bg: rgba(74, 222, 128, 0.08);
+      --tier-low: #64748b;
+      --tier-low-bg: rgba(100, 116, 139, 0.1);
+      --tier-calendar: #60a5fa;
+      --tier-calendar-bg: rgba(96, 165, 250, 0.1);
+
+      --confidence-high: #4ade80;
+      --confidence-low: #fbbf24;
+
+      --font-display: 'Syne', sans-serif;
+      --font-body: 'Outfit', sans-serif;
+      --font-mono: 'Azeret Mono', monospace;
+
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 10px;
+    }
+
+    html { font-size: 16px; }
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* subtle noise texture */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.018;
+      pointer-events: none;
+      z-index: 10000;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 256px 256px;
+    }
+
+    /* ─── HEADER ─── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .run-info {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      padding: 4px 10px;
+      background: var(--bg-elevated);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+    }
+
+    .header-stats {
+      display: flex;
+      gap: 16px;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .stat-value.changes {
+      color: var(--accent);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .save-status {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: var(--radius-md);
+      transition: all 0.3s ease;
+      white-space: nowrap;
+    }
+
+    .save-status.saved {
+      color: var(--save-green);
+      background: var(--save-glow);
+      border: 1px solid rgba(52, 211, 153, 0.2);
+    }
+
+    .save-status.saving {
+      color: var(--confidence-low);
+      background: rgba(251, 191, 36, 0.08);
+      border: 1px solid rgba(251, 191, 36, 0.15);
+    }
+
+    .save-status.error {
+      color: var(--tier-urgent);
+      background: var(--tier-urgent-bg);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .save-status.idle {
+      color: var(--text-dim);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+    }
+
+    .save-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .save-status.saving .save-dot {
+      animation: blink 0.8s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ─── FILTER BAR ─── */
+    .filter-bar {
+      position: sticky;
+      top: 57px;
+      z-index: 99;
+      background: var(--bg-deep);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 28px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .tier-filters {
+      display: flex;
+      gap: 4px;
+    }
+
+    .tier-filter {
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .tier-filter:hover { background: var(--bg-elevated); color: var(--text-primary); }
+    .tier-filter.active { border-color: var(--filter-color, var(--accent)); color: var(--filter-color, var(--accent)); background: var(--filter-bg, var(--accent-glow)); }
+
+    .search-box {
+      margin-left: auto;
+      position: relative;
+    }
+
+    .search-box input {
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      padding: 5px 12px 5px 30px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      width: 220px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-box input:focus { border-color: var(--border-focus); }
+    .search-box input::placeholder { color: var(--text-dim); }
+
+    .search-box::before {
+      content: '⌕';
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      pointer-events: none;
+    }
+
+    .toggle-modified {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      transition: background 0.15s;
+    }
+
+    .toggle-modified:hover { background: var(--bg-elevated); }
+
+    .toggle-modified input[type="checkbox"] {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* ─── TABLE ─── */
+    .table-container {
+      padding: 8px 28px 80px;
+    }
+
+    .email-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .email-table thead th {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 102px;
+      background: var(--bg-deep);
+      z-index: 10;
+      white-space: nowrap;
+    }
+
+    .email-table tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.12s;
+      animation: row-in 0.3s ease-out both;
+    }
+
+    .email-table tbody tr:hover { background: var(--bg-hover); }
+    .email-table tbody tr.modified { background: var(--bg-modified); }
+    .email-table tbody tr.modified:hover { background: #201e2c; }
+
+    @keyframes row-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .email-table td {
+      padding: 10px 10px;
+      vertical-align: middle;
+      font-size: 0.88rem;
+    }
+
+    /* Column widths */
+    .col-tier { width: 160px; }
+    .col-subject { width: auto; }
+    .col-from { width: 160px; }
+    .col-addressed { width: 50px; text-align: center; }
+    .col-confidence { width: 65px; text-align: center; }
+    .col-override { width: 180px; }
+    .col-notes { width: 200px; }
+
+    /* ─── TIER BADGE ─── */
+    .tier-badge {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
+
+    .tier-badge.urgent-action   { color: var(--tier-urgent);        background: var(--tier-urgent-bg);        border: 1px solid rgba(239, 68, 68, 0.2); }
+    .tier-badge.action-needed   { color: var(--tier-action);        background: var(--tier-action-bg);        border: 1px solid rgba(251, 146, 60, 0.2); }
+    .tier-badge.priority-info   { color: var(--tier-priority-info); background: var(--tier-priority-info-bg); border: 1px solid rgba(45, 212, 191, 0.2); }
+    .tier-badge.informed        { color: var(--tier-informed);      background: var(--tier-informed-bg);      border: 1px solid rgba(74, 222, 128, 0.15); }
+    .tier-badge.low-priority    { color: var(--tier-low);           background: var(--tier-low-bg);           border: 1px solid rgba(100, 116, 139, 0.2); }
+    .tier-badge.calendar        { color: var(--tier-calendar);      background: var(--tier-calendar-bg);      border: 1px solid rgba(96, 165, 250, 0.2); }
+
+    /* ─── ADDRESS BADGE ─── */
+    .addr-badge {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 500;
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .addr-badge.to { color: #818cf8; background: rgba(129, 140, 248, 0.12); }
+    .addr-badge.cc { color: #94a3b8; background: rgba(148, 163, 184, 0.1); }
+    .addr-badge.dl { color: #a78bfa; background: rgba(167, 139, 250, 0.1); }
+
+    /* ─── CONFIDENCE BADGE ─── */
+    .conf-badge {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 500;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .conf-badge.high { color: var(--confidence-high); background: rgba(74, 222, 128, 0.08); }
+    .conf-badge.low  { color: var(--confidence-low);  background: rgba(251, 191, 36, 0.1); }
+
+    /* ─── SUBJECT ─── */
+    .subject-text {
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+
+    .subject-text:hover { color: var(--accent); }
+
+    .subject-reason {
+      display: none;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      margin-top: 4px;
+      padding: 6px 10px;
+      background: var(--bg-elevated);
+      border-radius: var(--radius-sm);
+      border-left: 2px solid var(--border-focus);
+      line-height: 1.6;
+    }
+
+    .subject-reason .label {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    tr.expanded .subject-reason { display: block; }
+
+    .from-name {
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    /* ─── OVERRIDE SELECT ─── */
+    .override-select {
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 5px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+      outline: none;
+      width: 100%;
+      transition: all 0.15s;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%235a5a70'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      padding-right: 24px;
+    }
+
+    .override-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+    .override-select:hover { border-color: var(--border-focus); }
+    .override-select.changed { border-color: var(--accent); color: var(--accent); background-color: var(--accent-glow); }
+
+    /* ─── NOTES INPUT ─── */
+    .notes-input {
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 5px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      width: 100%;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .notes-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+    .notes-input::placeholder { color: var(--text-dim); }
+    .notes-input.has-content { border-color: var(--border-focus); }
+
+    /* ─── TOAST ─── */
+    .toast {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      border-radius: var(--radius-md);
+      font-size: 0.85rem;
+      font-weight: 500;
+      z-index: 1000;
+      transform: translateX(120%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toast.show { transform: translateX(0); }
+    .toast.success { background: #065f46; color: #a7f3d0; border: 1px solid #10b981; }
+    .toast.error   { background: #7f1d1d; color: #fca5a5; border: 1px solid #ef4444; }
+
+    /* ─── EMPTY STATE ─── */
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--text-dim);
+    }
+
+    .empty-state h2 {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+
+    /* ─── LOADING ─── */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 60vh;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    /* ─── SCROLLBAR ─── */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-deep); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-focus); }
+  </style>
+</head>
+<body>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast"></div>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">SIFTR REVIEW</div>
+      <div class="run-info" id="runInfo">loading…</div>
+    </div>
+    <div class="header-stats" id="headerStats"></div>
+    <div class="header-right">
+      <div class="save-status idle" id="saveStatus">
+        <span class="save-dot"></span>
+        <span id="saveText">No changes</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar">
+    <div class="tier-filters" id="tierFilters"></div>
+    <label class="toggle-modified">
+      <input type="checkbox" id="modifiedOnly" onchange="App.render()">
+      Modified only
+    </label>
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="Search subject or sender…" oninput="App.render()">
+    </div>
+  </div>
+
+  <!-- TABLE -->
+  <div class="table-container">
+    <div class="loading" id="loadingState">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Loading triage data…</div>
+    </div>
+    <table class="email-table" id="emailTable" style="display:none">
+      <thead>
+        <tr>
+          <th class="col-tier">Tier</th>
+          <th class="col-subject">Subject</th>
+          <th class="col-from">From</th>
+          <th class="col-addressed">Addr</th>
+          <th class="col-confidence">Conf</th>
+          <th class="col-override">Override</th>
+          <th class="col-notes">Notes</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+    <div class="empty-state" id="emptyState" style="display:none">
+      <h2>No emails match</h2>
+      <p>Try adjusting your filters or search query.</p>
+    </div>
+  </div>
+
+  <script>
+    // ═══════════════════════════════════════════════════════════════════
+    //  TIER DEFINITIONS
+    // ═══════════════════════════════════════════════════════════════════
+    const TIERS = [
+      { key: 'URGENT ACTION',     emoji: '🔴', label: 'Urgent Action',     cssClass: 'urgent-action',  color: '#ef4444', bg: 'rgba(239,68,68,0.1)'   },
+      { key: 'ACTION NEEDED',     emoji: '🟠', label: 'Action Needed',     cssClass: 'action-needed',  color: '#fb923c', bg: 'rgba(251,146,60,0.1)'  },
+      { key: 'PRIORITY INFORMED', emoji: '🟢⬆', label: 'Priority Informed', cssClass: 'priority-info',  color: '#2dd4bf', bg: 'rgba(45,212,191,0.1)'  },
+      { key: 'INFORMED',          emoji: '🟢', label: 'Informed',          cssClass: 'informed',       color: '#4ade80', bg: 'rgba(74,222,128,0.08)' },
+      { key: 'LOW PRIORITY',      emoji: '⚪', label: 'Low Priority',      cssClass: 'low-priority',   color: '#64748b', bg: 'rgba(100,116,139,0.1)' },
+      { key: 'CALENDAR',          emoji: '📅', label: 'Calendar',          cssClass: 'calendar',       color: '#60a5fa', bg: 'rgba(96,165,250,0.1)'  },
+    ];
+
+    const TIER_BY_KEY = {};
+    TIERS.forEach(t => { TIER_BY_KEY[t.key] = t; });
+
+    function normalizeTierKey(tier) {
+      return (tier || '').replace(/^[^\w]+/, '').trim().toUpperCase();
+    }
+
+    function getTierInfo(tier) {
+      return TIER_BY_KEY[normalizeTierKey(tier)] || TIERS[4]; // fallback to low
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  APP STATE
+    // ═══════════════════════════════════════════════════════════════════
+    const App = {
+      data: null,
+      changes: {},         // id → { userOverride, notes }
+      activeFilters: new Set(), // tier keys to show (empty = all)
+      expandedRows: new Set(),
+      saveTimer: null,
+      saveState: 'idle',   // idle | saving | saved | error
+
+      async init() {
+        await this.loadData();
+        this.buildFilterButtons();
+        this.render();
+        this.updateStats();
+      },
+
+      async loadData() {
+        try {
+          const res = await fetch('/api/data');
+          this.data = await res.json();
+
+          // Pre-populate changes from existing overrides/notes
+          this.data.emails.forEach(email => {
+            if (email.userOverride || email.notes) {
+              this.changes[email.id] = {
+                userOverride: email.userOverride || '',
+                notes: email.notes || ''
+              };
+            }
+          });
+
+          // Update run info
+          const runDate = new Date(this.data.triageRun);
+          document.getElementById('runInfo').textContent =
+            `${runDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${runDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} · ${this.data.window || ''}`;
+
+          document.getElementById('loadingState').style.display = 'none';
+          document.getElementById('emailTable').style.display = 'table';
+        } catch (err) {
+          document.getElementById('loadingState').innerHTML =
+            `<div style="color:var(--tier-urgent)">Failed to load data: ${err.message}</div>`;
+        }
+      },
+
+      buildFilterButtons() {
+        const container = document.getElementById('tierFilters');
+        TIERS.forEach(tier => {
+          const count = this.data.emails.filter(e => normalizeTierKey(e.tier) === tier.key).length;
+          if (count === 0) return;
+          const btn = document.createElement('button');
+          btn.className = 'tier-filter active';
+          btn.style.setProperty('--filter-color', tier.color);
+          btn.style.setProperty('--filter-bg', tier.bg);
+          btn.textContent = `${tier.emoji} ${count}`;
+          btn.title = tier.label;
+          btn.dataset.tier = tier.key;
+          btn.addEventListener('click', () => {
+            btn.classList.toggle('active');
+            if (btn.classList.contains('active')) {
+              this.activeFilters.delete(tier.key);
+            } else {
+              this.activeFilters.add(tier.key);
+            }
+            // if all are deactivated, show all
+            const allBtns = container.querySelectorAll('.tier-filter');
+            const activeCount = container.querySelectorAll('.tier-filter.active').length;
+            if (activeCount === 0) {
+              allBtns.forEach(b => { b.classList.add('active'); });
+              this.activeFilters.clear();
+            }
+            this.render();
+          });
+          container.appendChild(btn);
+        });
+      },
+
+      getFilteredEmails() {
+        let emails = this.data.emails;
+        const search = document.getElementById('searchInput').value.toLowerCase();
+        const modOnly = document.getElementById('modifiedOnly').checked;
+
+        // Tier filter: activeFilters contains tiers to HIDE (toggled off)
+        if (this.activeFilters.size > 0) {
+          emails = emails.filter(e => !this.activeFilters.has(normalizeTierKey(e.tier)));
+        }
+
+        if (search) {
+          emails = emails.filter(e =>
+            (e.subject || '').toLowerCase().includes(search) ||
+            (e.from?.name || '').toLowerCase().includes(search) ||
+            (e.from?.address || '').toLowerCase().includes(search)
+          );
+        }
+
+        if (modOnly) {
+          emails = emails.filter(e => this.isModified(e.id));
+        }
+
+        return emails;
+      },
+
+      isModified(id) {
+        const c = this.changes[id];
+        if (!c) return false;
+        const email = this.data.emails.find(e => e.id === id);
+        if (!email) return false;
+        return (c.userOverride && c.userOverride !== '') || (c.notes && c.notes !== '');
+      },
+
+      getChangeCount() {
+        return Object.keys(this.changes).filter(id => this.isModified(id)).length;
+      },
+
+      updateStats() {
+        const total = this.data.emails.length;
+        const lowConf = this.data.emails.filter(e => (e.confidence || '').toLowerCase() === 'low').length;
+        const changes = this.getChangeCount();
+
+        document.getElementById('headerStats').innerHTML = `
+          <span class="stat"><span class="stat-value">${total}</span> emails</span>
+          <span class="stat"><span class="stat-value">${lowConf}</span> low conf</span>
+          <span class="stat"><span class="stat-value changes">${changes}</span> changes</span>
+        `;
+      },
+
+      setSaveStatus(state, text) {
+        this.saveState = state;
+        const el = document.getElementById('saveStatus');
+        const textEl = document.getElementById('saveText');
+        el.className = `save-status ${state}`;
+        textEl.textContent = text;
+      },
+
+      scheduleAutoSave() {
+        if (this.saveTimer) clearTimeout(this.saveTimer);
+        this.setSaveStatus('saving', 'Saving…');
+        this.saveTimer = setTimeout(() => this.save(), 600);
+      },
+
+      render() {
+        const tbody = document.getElementById('tableBody');
+        const emails = this.getFilteredEmails();
+        const empty = document.getElementById('emptyState');
+        const table = document.getElementById('emailTable');
+
+        if (emails.length === 0) {
+          table.style.display = 'none';
+          empty.style.display = 'block';
+          return;
+        }
+        table.style.display = 'table';
+        empty.style.display = 'none';
+
+        tbody.innerHTML = '';
+
+        emails.forEach((email, idx) => {
+          const tierInfo = getTierInfo(email.tier);
+          const change = this.changes[email.id] || {};
+          const modified = this.isModified(email.id);
+          const expanded = this.expandedRows.has(email.id);
+
+          const tr = document.createElement('tr');
+          tr.className = `${modified ? 'modified' : ''} ${expanded ? 'expanded' : ''}`;
+          tr.style.animationDelay = `${Math.min(idx * 15, 300)}ms`;
+
+          // Tier badge
+          const tierTd = document.createElement('td');
+          tierTd.className = 'col-tier';
+          tierTd.innerHTML = `<span class="tier-badge ${tierInfo.cssClass}">${tierInfo.emoji} ${tierInfo.label}</span>`;
+
+          // Subject + expandable reason
+          const subjectTd = document.createElement('td');
+          subjectTd.className = 'col-subject';
+          const subjectSpan = document.createElement('span');
+          subjectSpan.className = 'subject-text';
+          subjectSpan.textContent = email.subject || '(no subject)';
+          subjectSpan.addEventListener('click', () => {
+            if (this.expandedRows.has(email.id)) {
+              this.expandedRows.delete(email.id);
+            } else {
+              this.expandedRows.add(email.id);
+            }
+            tr.classList.toggle('expanded');
+          });
+
+          const reasonDiv = document.createElement('div');
+          reasonDiv.className = 'subject-reason';
+          let reasonHtml = '';
+          if (email.reason) reasonHtml += `<div><span class="label">Reason</span> ${this.escapeHtml(email.reason)}</div>`;
+          if (email.uncertainty) reasonHtml += `<div><span class="label">Uncertainty</span> ${this.escapeHtml(email.uncertainty)}</div>`;
+          if (email.date) {
+            const d = new Date(email.date);
+            reasonHtml += `<div><span class="label">Received</span> ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>`;
+          }
+          // Only show the address field that includes the user
+          const addrType = (email.addressed || '').toLowerCase();
+          if (addrType === 'to' && email.to) reasonHtml += `<div><span class="label">To</span> ${this.escapeHtml(email.to)}</div>`;
+          else if (addrType === 'cc' && email.cc) reasonHtml += `<div><span class="label">CC</span> ${this.escapeHtml(email.cc)}</div>`;
+          else if (addrType === 'dl') reasonHtml += `<div><span class="label">Via</span> Distribution list</div>`;
+          reasonDiv.innerHTML = reasonHtml;
+
+          subjectTd.appendChild(subjectSpan);
+          subjectTd.appendChild(reasonDiv);
+
+          // From
+          const fromTd = document.createElement('td');
+          fromTd.className = 'col-from';
+          fromTd.innerHTML = `<span class="from-name">${this.escapeHtml(email.from?.name || email.from?.address || '—')}</span>`;
+
+          // Addressed
+          const addrTd = document.createElement('td');
+          addrTd.className = 'col-addressed';
+          const addr = (email.addressed || '').toLowerCase();
+          if (addr) {
+            addrTd.innerHTML = `<span class="addr-badge ${addr}">${addr.toUpperCase()}</span>`;
+          }
+
+          // Confidence
+          const confTd = document.createElement('td');
+          confTd.className = 'col-confidence';
+          const conf = (email.confidence || 'high').toLowerCase();
+          confTd.innerHTML = `<span class="conf-badge ${conf}">${conf === 'low' ? 'LOW' : 'HIGH'}</span>`;
+
+          // Override select
+          const overrideTd = document.createElement('td');
+          overrideTd.className = 'col-override';
+          const select = document.createElement('select');
+          select.className = 'override-select';
+          if (change.userOverride) select.classList.add('changed');
+
+          // First option: keep current
+          const keepOpt = document.createElement('option');
+          keepOpt.value = '';
+          keepOpt.textContent = `— keep —`;
+          select.appendChild(keepOpt);
+
+          TIERS.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = `${t.emoji} ${t.key}`;
+            opt.textContent = `${t.emoji} ${t.label}`;
+            if (change.userOverride === opt.value) opt.selected = true;
+            select.appendChild(opt);
+          });
+
+          select.addEventListener('change', (e) => {
+            if (!this.changes[email.id]) this.changes[email.id] = { userOverride: '', notes: '' };
+            this.changes[email.id].userOverride = e.target.value;
+            e.target.classList.toggle('changed', e.target.value !== '');
+            tr.classList.toggle('modified', this.isModified(email.id));
+            this.updateStats();
+            this.scheduleAutoSave();
+          });
+          overrideTd.appendChild(select);
+
+          // Notes input
+          const notesTd = document.createElement('td');
+          notesTd.className = 'col-notes';
+          const notesInput = document.createElement('input');
+          notesInput.type = 'text';
+          notesInput.className = 'notes-input';
+          notesInput.placeholder = 'Add note…';
+          notesInput.value = change.notes || email.notes || '';
+          if (notesInput.value) notesInput.classList.add('has-content');
+
+          notesInput.addEventListener('input', (e) => {
+            if (!this.changes[email.id]) this.changes[email.id] = { userOverride: '', notes: '' };
+            this.changes[email.id].notes = e.target.value;
+            e.target.classList.toggle('has-content', e.target.value !== '');
+            tr.classList.toggle('modified', this.isModified(email.id));
+            this.updateStats();
+            this.scheduleAutoSave();
+          });
+          notesTd.appendChild(notesInput);
+
+          tr.append(tierTd, subjectTd, fromTd, addrTd, confTd, overrideTd, notesTd);
+          tbody.appendChild(tr);
+        });
+      },
+
+      async save() {
+        this.setSaveStatus('saving', 'Saving…');
+
+        // Merge changes into email data
+        const updated = this.data.emails.map(email => {
+          const change = this.changes[email.id];
+          if (change) {
+            return { ...email, userOverride: change.userOverride || '', notes: change.notes || '' };
+          }
+          return email;
+        });
+
+        try {
+          const res = await fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emails: updated })
+          });
+          const result = await res.json();
+          if (result.ok) {
+            this.data.emails = updated;
+            this.setSaveStatus('saved', `Saved ✓`);
+          } else {
+            throw new Error(result.error || 'Save failed');
+          }
+        } catch (err) {
+          this.setSaveStatus('error', `Save failed`);
+          this.showToast('error', `✗ ${err.message}`);
+        }
+      },
+
+      showToast(type, message) {
+        const toast = document.getElementById('toast');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 3000);
+      },
+
+      escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
+    };
+
+    App.init();
+  </script>
+</body>
+</html>

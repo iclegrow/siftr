@@ -1,0 +1,9 @@
+# Personal data (user-specific, not shared)
+siftr_personal/
+
+# Node.js
+node_modules/
+
+# OS artifacts
+Thumbs.db
+.DS_Store
