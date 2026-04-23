@@ -67,7 +67,7 @@ function Read-JsonFile {
                 throw "JSON file '$Path' was empty."
             }
 
-            return ($raw | ConvertFrom-Json -ErrorAction Stop)
+            return ($raw | ConvertFrom-Json -DateKind String -ErrorAction Stop)
         }
         catch {
             if ($attempt -ge $MaxAttempts) {
@@ -347,6 +347,13 @@ function Get-BodyText {
     ''
 }
 
+function Get-ParentFolderName {
+    param([Parameter(Mandatory)]$Item)
+
+    try { return [string]$Item.Parent.Name }
+    catch { return '' }
+}
+
 function Get-Addressing {
     param(
         [Parameter(Mandatory)]$Message,
@@ -498,6 +505,28 @@ function Split-IntoChunks {
     @($chunks)
 }
 
+function ConvertTo-NativeArgumentString {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    $quoted = foreach ($argument in $Arguments) {
+        if ($null -eq $argument -or $argument -eq '') {
+            '""'
+            continue
+        }
+
+        if ($argument -notmatch '[\s"]') {
+            $argument
+            continue
+        }
+
+        $escaped = $argument -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"{0}"' -f $escaped
+    }
+
+    ($quoted -join ' ')
+}
+
 function Strip-CodeFences {
     param([Parameter(Mandatory)][string]$Text)
 
@@ -519,8 +548,9 @@ function Invoke-CopilotRaw {
     $stderrPath = Join-Path $env:TEMP ("siftr-copilot-{0}-{1}.stderr" -f $PID, ([guid]::NewGuid().ToString('N')))
 
     try {
+        $argumentLine = ConvertTo-NativeArgumentString -Arguments $Arguments
         $process = Start-Process -FilePath $CopilotExe `
-            -ArgumentList $Arguments `
+            -ArgumentList $argumentLine `
             -WorkingDirectory $SiftrRoot `
             -NoNewWindow `
             -PassThru `
@@ -880,7 +910,7 @@ function Get-DigestRecords {
         $item = $User.Namespace.GetItemFromID($record.EntryId)
         $record | Add-Member -NotePropertyName SenderSmtp -NotePropertyValue (Resolve-SmtpAddress -Item $item) -Force
         $record | Add-Member -NotePropertyName FullBody -NotePropertyValue (Get-BodyText -Namespace $User.Namespace -EntryId $record.EntryId) -Force
-        $record | Add-Member -NotePropertyName FolderName -NotePropertyValue (try { [string]$item.Parent.Name } catch { '' }) -Force
+        $record | Add-Member -NotePropertyName FolderName -NotePropertyValue (Get-ParentFolderName -Item $item) -Force
     }
 
     @($records)

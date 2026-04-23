@@ -27,6 +27,10 @@ This log is maintained by Copilot to preserve context across sessions.
 - **Copilot subprocess timeout**: the full-loop runner now kills and fails a
   stuck `copilot` classification subprocess after a bounded timeout instead of
   hanging forever mid-cycle with `status: "active"`.
+- **Digest folder-name crash fixed**: the digest path no longer uses an invalid
+  inline `try { } catch { }` expression while reading `item.Parent.Name`, which
+  had been crashing the loop immediately after a successful triage cycle when a
+  pending digest slot was processed.
 - Source: the 2026-04-23 full LLM loop resumed on top of older state, ran an
   8:54 AM cycle, then left `loop-state.json` active with `nextCycleAt` at
   9:00 AM after the background agent was gone.
