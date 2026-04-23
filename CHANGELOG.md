@@ -5,6 +5,17 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-22 — Loop: default final cycle moved to 8 PM
+
+- **Later default stop time**: `siftr loop` now defaults to **8:00 PM local**
+  so the final scheduled triage cycle runs at or just after 8 PM before the
+  loop stops for the day.
+- **Local runner path fixed**: the detached local loop runner now points at the
+  standalone `C:\Users\ialegrow\siftr` checkout instead of the removed
+  `copilot-home\siftr` submodule path.
+
+---
+
 ## 2026-04-22 — Security: tighter prompt-boundary handling
 
 - **Prompt-injection guidance added**: SKILL.md now explicitly treats email

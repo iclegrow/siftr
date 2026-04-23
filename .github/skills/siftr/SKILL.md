@@ -597,7 +597,7 @@ overrode a classification and can inform rule changes.
 | `siftr process my digest` | Apply mark-read selections from digest |
 | `siftr status` | Show org cache age and learning file count |
 | `siftr dry-run` | Triage + classify but use `-WhatIf` for inbox actions |
-| `siftr loop` | Start hourly triage loop until 7pm (see §11) |
+| `siftr loop` | Start hourly triage loop until 8pm (see §11) |
 | `siftr loop until {time}` | Start loop with custom end time |
 | `siftr stop` | Stop the running loop gracefully |
 
@@ -791,7 +791,7 @@ When the user says **"siftr process my digest"**:
 
 ## 11. Loop Mode — Hourly Automated Triage
 
-When the user says **"siftr loop"**, **"siftr loop until 7pm"**, or similar,
+When the user says **"siftr loop"**, **"siftr loop until 8pm"**, or similar,
 start an automated triage loop that runs every hour on the hour.
 
 ### 11a. Initialize the loop
@@ -799,8 +799,8 @@ start an automated triage loop that runs every hour on the hour.
 1. **Load or create loop state** from `loop-state.json` in the personal-data
    directory.
 2. **Determine end time:**
-   - Default: **7:00 PM local today**. The last triage cycle runs at or just
-     after 7pm; no new cycles start after that.
+   - Default: **8:00 PM local today**. The last triage cycle runs at or just
+     after 8pm; no new cycles start after that.
    - The user may specify a custom end time (e.g., "siftr loop until 5pm").
    - If current time is already past the end time, inform the user and do not
      start.
@@ -818,7 +818,7 @@ start an automated triage loop that runs every hour on the hour.
 6. **Write initial state** and print the schedule:
    ```
    🔁 Siftr loop started
-      End time: 7:00 PM
+      End time: 8:00 PM
       Triage: every hour on the hour
       Digests: 12:00 PM, 5:00 PM
       Next cycle: {time}

@@ -35,7 +35,7 @@ a detailed walkthrough from zero to first triage.
 | `siftr digest all mails` | Digest including already-read emails |
 | `siftr process my digest` | Apply mark-read selections from digest |
 | `siftr status` | Show org cache age and learning file count |
-| `siftr loop` | Start hourly triage loop until 7pm |
+| `siftr loop` | Start hourly triage loop until 8pm |
 | `siftr stop` | Stop the running loop |
 
 ## Classification Model — Intent × Priority
