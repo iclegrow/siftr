@@ -5,6 +5,104 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-22 — Security: tighter prompt-boundary handling
+
+- **Prompt-injection guidance added**: SKILL.md now explicitly treats email
+  bodies, replies, and summaries as untrusted content and forbids treating
+  them as instructions that can modify Siftr policy or runtime behavior.
+- **Category overrides constrained**: `Invoke-SiftrInboxActions` now ignores
+  arbitrary category overrides by default. A caller must explicitly mark an
+  override as trusted, and even then the override must match the category set
+  already allowed for the chosen tier.
+- **Digest HTML sanitized**: the browser digest UI now sanitizes `summaryFull`
+  with a small allow-list of formatting tags instead of rendering arbitrary
+  raw HTML from digest JSON.
+- **Digest action text clarified**: the UI now labels `actionText` as a
+  user-authored field, and SKILL.md documents that it must start empty and
+  must never be auto-populated from email content.
+
+---
+
+## 2026-04-21 — Reliability: safer Inbox fetch + safer bookmark advancement
+
+- **Inbox fetch hardened**: `Get-SiftrInboxRootMessages` and
+  `_Get-SiftrConversationInboxItems` now snapshot Outlook folder items with
+  `GetFirst()` / `GetNext()` before filtering instead of relying on direct
+  `foreach` over the live COM collection.
+- **No early stop on older items**: the root fetch no longer `break`s on the
+  first message older than `Since`; it continues scanning the snapshot so a
+  misordered or partially refreshed COM view cannot hide newer uncategorized
+  mail later in the folder.
+- **Diagnostics improved**: inbox records now include `ReceivedTime` and
+  `Categories`, which makes missed-mail audits match Outlook reality.
+- **Loop guidance tightened**: SKILL.md now requires capturing a
+  fetch-start bookmark before each cycle and writing that value back to
+  `last-scan.json` only after successful actions. Loop mode also retries
+  suspiciously tiny fetches once before declaring the Inbox drained.
+- **Mixed-thread calendar safety**: conversation-wide fan-out now preserves
+  `CALENDAR` routing for meeting-class items even when the latest non-meeting
+  reply in that thread is classified as Action or Inform.
+- Source: a 3 PM loop cycle under-fetched the Inbox and a cycle-end bookmark
+  advanced past messages that arrived during the run, leaving uncategorized
+  Inbox mail behind.
+
+---
+
+## 2026-04-20 — Learning: soft asks in reply threads → ACTION NEEDED
+
+- **Expanded Phase 2 🟠 rule**: polite / indirect asks now count as real asks
+  when they are directed to the user on the **To** line. Examples:
+  **"let us know if you are good to..."**, **"would you be open to..."**,
+  **"can you help kick off..."**, **"happy to lean in from there"**.
+- **Expanded direct-ask rule**: short question-form asks for missing info or
+  approval (for example **"Do you have a phone number for...?"** or
+  **"Are you OK with...?"**) now explicitly count as 🟠 ACTION NEEDED.
+- **Loop-mode clarification**: hourly triage must not rely on subject-only
+  shortcuts for reply threads. If the message is a reply/forward or may contain
+  a buried ask, read the latest body text and apply full Phase 2 rules.
+- Source: Sean Morgan thread (`RE: Feedback Requested: W+D Creator Council -
+  Gaming Focus`) was incorrectly classified 🟢 INFORMED even though the body
+  clearly asked User to confirm ownership of the Xbox follow-up.
+- Source: Marjorie Ferris thread (`RE: Package to send`) was incorrectly
+  classified 🟢 INFORMED even though the body asked User for Project Contact's phone
+  number.
+
+---
+
+## 2026-04-20 — Fix: meeting requests now participate in CALENDAR routing
+
+- **Inbox fetch expanded**: `Get-SiftrInboxRootMessages` now includes Outlook
+  meeting items (`IPM.Schedule.Meeting*`), not just `olMail`.
+- **Message metadata expanded**: fetched items now include `MessageClass` so the
+  skill can distinguish normal mail from meeting requests / updates /
+  cancellations.
+- **Calendar routing clarified**: any item with `MessageClass` beginning
+  `IPM.Schedule.Meeting` should classify as **📅 CALENDAR** and follow the
+  configured `CALENDAR -> Meetings` move rule.
+- Source: Inbox meeting items like `Windows + Xbox Weekly LT Scrum` and
+  `FY27 budget model` were staying in Inbox because they were never entering the
+  Siftr pipeline.
+
+---
+
+## 2026-04-21 — Conversation-wide labeling from latest thread state
+
+- **New helper**: `Get-SiftrConversationRootMessages` returns all Inbox-root
+  items for a given `ConversationId`, so Siftr can classify the latest message
+  with real sibling-thread context instead of relying only on quoted history.
+- **Action fan-out**: `Invoke-SiftrInboxActions` now treats `ConversationId` as
+  a conversation-level decision. It picks the latest classified item in the
+  batch for that conversation, then applies that tier to all currently
+  uncategorized Inbox-root siblings in the same thread.
+- **No retroactive rewrites**: already-categorized earlier messages are left
+  alone, so later thread turns can escalate or de-escalate without changing
+  historical labels.
+- Source: uncategorized earlier replies like `Re: 1:1 Michael/User` and
+  `RE: CP+ Born Green - 4/20/2026` were being skipped because only the newest
+  thread item received actions.
+
+---
+
 ## 2026-04-17 — Shareability Refactor: Personal Rules & Config
 
 **Major refactor** to make Siftr usable by anyone, not just the original author.

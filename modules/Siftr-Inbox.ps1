@@ -18,7 +18,9 @@
 
     Public interface
     ────────────────
-    Get-SiftrInboxRootMessages   Return unread messages from the Inbox root only.
+    Get-SiftrInboxRootMessages   Return messages from the Inbox root.
+    Get-SiftrConversationRootMessages
+                                Return Inbox-root messages for one conversation.
     Move-SiftrMessage           Move one message by InternetMessageId.
     Set-SiftrMessageCategories  Apply one or more Outlook categories to a message.
     Set-SiftrMessageReadState   Mark a message (+ conversation) as read/unread.
@@ -167,6 +169,80 @@ function _Get-BodyPreview {
     $body.Substring(0, $MaxLength) + '...'
 }
 
+function _Is-SiftrEligibleInboxItem {
+    param([Parameter(Mandatory)]$Item)
+
+    if ($null -eq $Item) { return $false }
+    if ($Item.Class -eq 43) { return $true } # olMail
+
+    $messageClass = [string]$Item.MessageClass
+    if ($messageClass -like 'IPM.Schedule.Meeting*') { return $true }
+
+    return $false
+}
+
+function _ConvertTo-SiftrInboxRecord {
+    param([Parameter(Mandatory)]$Item)
+
+    [PSCustomObject]@{
+        Subject           = $item.Subject
+        ReceivedTime      = [datetime]$item.ReceivedTime
+        ReceivedDateTime  = ([datetime]$item.ReceivedTime).ToString('o')
+        InternetMessageId = $item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x1035001F')
+        ConversationId    = $item.ConversationID
+        BodyPreview       = _Get-BodyPreview -Item $item
+        Importance        = switch ([int]$item.Importance) {
+            2 { 'high' }
+            0 { 'low' }
+            default { 'normal' }
+        }
+        From = [PSCustomObject]@{
+            Name    = $item.SenderName
+            Address = $item.SenderEmailAddress
+        }
+        To = $item.To
+        CC = $item.CC
+        Categories = [string]$item.Categories
+        EntryId = $item.EntryID
+        MessageClass = [string]$item.MessageClass
+        IsRead = -not $item.UnRead
+    }
+}
+
+function _Get-SiftrFolderItemsSnapshot {
+    param([Parameter(Mandatory)]$Folder)
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    $items = $Folder.Items
+    $items.Sort('[ReceivedTime]', $true)
+
+    for ($item = $items.GetFirst(); $null -ne $item; $item = $items.GetNext()) {
+        $results.Add($item)
+    }
+
+    $results
+}
+
+function _Get-SiftrConversationInboxItems {
+    param(
+        [Parameter(Mandatory)]$Inbox,
+        [Parameter(Mandatory)][string]$ConversationId,
+        [switch]$IncludeCategorized,
+        [switch]$IncludeRead
+    )
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in (_Get-SiftrFolderItemsSnapshot -Folder $Inbox)) {
+        if (-not (_Is-SiftrEligibleInboxItem -Item $item)) { continue }
+        if ([string]$item.ConversationID -ne $ConversationId) { continue }
+        if (-not $IncludeRead -and $item.UnRead -ne $true) { continue }
+        if (-not $IncludeCategorized -and -not [string]::IsNullOrWhiteSpace($item.Categories)) { continue }
+        $results.Add($item)
+    }
+
+    $results
+}
+
 function _Find-MessageByInternetId {
     <#
     .SYNOPSIS  Internal: locate a MailItem in the Inbox by InternetMessageId.
@@ -184,6 +260,44 @@ function _Find-MessageByInternetId {
 function _Normalize-SiftrTier {
     param([Parameter(Mandatory)][string]$Tier)
     ($Tier -replace '^[^\w]+', '').Trim().ToUpper()
+}
+
+function _Resolve-SiftrCategories {
+    param(
+        [Parameter(Mandatory)][string]$Tier,
+        [AllowNull()][object[]]$RequestedCategories,
+        [bool]$AllowOverride = $false
+    )
+
+    $tierClean = _Normalize-SiftrTier -Tier $Tier
+    $defaultCategories = if ($script:SiftrCategoryRules.ContainsKey($tierClean)) {
+        @($script:SiftrCategoryRules[$tierClean] | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    }
+    else {
+        @()
+    }
+
+    if (-not $AllowOverride -or $null -eq $RequestedCategories -or $RequestedCategories.Count -eq 0) {
+        return $defaultCategories
+    }
+
+    $requested = @($RequestedCategories |
+        ForEach-Object { [string]$_ } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
+
+    if ($requested.Count -ne $defaultCategories.Count) {
+        return $defaultCategories
+    }
+
+    foreach ($category in $requested) {
+        if ($category -notin $defaultCategories) {
+            return $defaultCategories
+        }
+    }
+
+    return $requested
 }
 
 function _Get-InboxSubfolder {
@@ -268,41 +382,54 @@ function Get-SiftrInboxRootMessages {
 
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($folder in $foldersToScan) {
-        $items = $folder.Items
-        $items.Sort('[ReceivedTime]', $true)
-
-        foreach ($item in $items) {
+        foreach ($item in (_Get-SiftrFolderItemsSnapshot -Folder $folder)) {
             if ($results.Count -ge $Limit) { break }
-            if ($item.Class -ne 43) { continue } # olMail
+            if (-not (_Is-SiftrEligibleInboxItem -Item $item)) { continue }
             if (-not $IncludeRead -and $item.UnRead -ne $true) { continue }
-            if ($item.ReceivedTime -lt $Since) { break }
+            if ($item.ReceivedTime -lt $Since) { continue }
             if ($SkipCategorized -and -not [string]::IsNullOrWhiteSpace($item.Categories)) { continue }
 
-            $results.Add([PSCustomObject]@{
-                Subject           = $item.Subject
-                ReceivedDateTime  = ([datetime]$item.ReceivedTime).ToString('o')
-                InternetMessageId = $item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x1035001F')
-                ConversationId    = $item.ConversationID
-                BodyPreview       = _Get-BodyPreview -Item $item
-                Importance        = switch ([int]$item.Importance) {
-                    2 { 'high' }
-                    0 { 'low' }
-                    default { 'normal' }
-                }
-                From = [PSCustomObject]@{
-                    Name    = $item.SenderName
-                    Address = $item.SenderEmailAddress
-                }
-                To = $item.To
-                CC = $item.CC
-                EntryId = $item.EntryID
-                IsRead = -not $item.UnRead
-            })
+            $results.Add((_ConvertTo-SiftrInboxRecord -Item $item))
         }
         if ($results.Count -ge $Limit) { break }
     }
 
     $results
+}
+
+function Get-SiftrConversationRootMessages {
+    <#
+    .SYNOPSIS  Return Inbox-root messages for a single conversation.
+    .DESCRIPTION
+        Fetches all eligible items in the Inbox root for the supplied
+        ConversationId. This is useful when Siftr wants to classify the latest
+        message using sibling thread context without touching subfolders.
+    .PARAMETER ConversationId
+        Outlook ConversationID for the thread to inspect.
+    .PARAMETER IncludeCategorized
+        When set, include items that already have Outlook categories.
+    .PARAMETER IncludeRead
+        When set, include read mail too. By default only unread mail is returned.
+    .OUTPUTS
+        PSCustomObjects ordered newest-first with the same shape as
+        Get-SiftrInboxRootMessages.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ConversationId,
+        [switch]$IncludeCategorized,
+        [switch]$IncludeRead
+    )
+
+    $inbox = _Get-OutlookInbox
+    $items = _Get-SiftrConversationInboxItems `
+        -Inbox $inbox `
+        -ConversationId $ConversationId `
+        -IncludeCategorized:$IncludeCategorized `
+        -IncludeRead:$IncludeRead
+
+    foreach ($item in $items) {
+        _ConvertTo-SiftrInboxRecord -Item $item
+    }
 }
 
 function Move-SiftrMessage {
@@ -475,6 +602,10 @@ function Invoke-SiftrInboxActions {
         Optional fields:
           - Categories         (string[] override; supports multi-category items)
           - Subject, From      (for reporting)
+          - ConversationId     (fan out the latest thread classification to
+                                uncategorized Inbox-root siblings)
+          - ReceivedDateTime   (used to choose the latest classification when
+                                multiple items from one conversation are present)
 
     .PARAMETER Classifications
         Array of objects with InternetMessageId and Tier properties.
@@ -498,16 +629,119 @@ function Invoke-SiftrInboxActions {
         Details = [System.Collections.Generic.List[PSCustomObject]]::new()
     }
 
-    foreach ($msg in $Classifications) {
+    $actionQueue = [System.Collections.Generic.List[object]]::new()
+    $queuedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $inbox = $null
+
+    foreach ($group in ($Classifications | Group-Object {
+        if ($null -ne $_.PSObject.Properties['ConversationId'] -and -not [string]::IsNullOrWhiteSpace([string]$_.ConversationId)) {
+            "conv::$([string]$_.ConversationId)"
+        }
+        else {
+            "msg::$([string]$_.InternetMessageId)"
+        }
+    })) {
+        $seed = $group.Group |
+            Sort-Object @{
+                Expression = {
+                    if ($null -eq $_.PSObject.Properties['ReceivedDateTime']) { return [datetime]::MinValue }
+                    try { return [datetime]$_.ReceivedDateTime } catch { return [datetime]::MinValue }
+                }
+                Descending = $true
+            } |
+            Select-Object -First 1
+
+        if ([string]::IsNullOrWhiteSpace([string]$seed.InternetMessageId)) {
+            continue
+        }
+
+        $targets = @()
+        if ($group.Name -like 'conv::*') {
+            if ($null -eq $inbox) {
+                $inbox = _Get-OutlookInbox
+            }
+
+            $targets = @(_Get-SiftrConversationInboxItems `
+                -Inbox $inbox `
+                -ConversationId ([string]$seed.ConversationId) `
+                -IncludeRead)
+
+            if ($targets.Count -eq 0) {
+                $targets = @($seed)
+            }
+        }
+        else {
+            $targets = @($seed)
+        }
+
+        foreach ($target in $targets) {
+            $targetId = ''
+            try { $targetId = [string]$target.InternetMessageId } catch {}
+            if ([string]::IsNullOrWhiteSpace($targetId)) {
+                try { $targetId = [string]$target.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x1035001F') } catch {}
+            }
+
+            if ([string]::IsNullOrWhiteSpace($targetId)) { continue }
+            if (-not $queuedIds.Add($targetId)) { continue }
+
+            $targetSubject = $seed.Subject
+            try {
+                if (-not [string]::IsNullOrWhiteSpace([string]$target.Subject)) {
+                    $targetSubject = [string]$target.Subject
+                }
+            } catch {}
+
+            $targetReceivedDateTime = $seed.ReceivedDateTime
+            try {
+                if ($null -ne $target.ReceivedDateTime) {
+                    $targetReceivedDateTime = $target.ReceivedDateTime
+                }
+            } catch {}
+            try {
+                if ($targetReceivedDateTime -eq $seed.ReceivedDateTime -and $null -ne $target.ReceivedTime) {
+                    $targetReceivedDateTime = ([datetime]$target.ReceivedTime).ToString('o')
+                }
+            } catch {}
+
+            $targetTier = $seed.Tier
+            try {
+                if ([string]$target.MessageClass -like 'IPM.Schedule.Meeting*') {
+                    $targetTier = 'CALENDAR'
+                }
+            } catch {}
+
+            $allowCategoryOverride = $false
+            if ($null -ne $seed.PSObject.Properties['AllowCategoryOverride']) {
+                try { $allowCategoryOverride = [bool]$seed.AllowCategoryOverride } catch { $allowCategoryOverride = $false }
+            }
+
+            $actionQueue.Add([PSCustomObject]@{
+                InternetMessageId = $targetId
+                Tier = $targetTier
+                Categories = if ($targetTier -eq 'CALENDAR') { $null } elseif ($null -ne $seed.PSObject.Properties['Categories']) { $seed.Categories } else { $null }
+                AllowCategoryOverride = $allowCategoryOverride
+                Subject = $targetSubject
+                ConversationId = if ($null -ne $seed.PSObject.Properties['ConversationId']) { $seed.ConversationId } else { $null }
+                ReceivedDateTime = $targetReceivedDateTime
+            })
+        }
+    }
+
+    foreach ($msg in $actionQueue) {
         $tierClean = _Normalize-SiftrTier -Tier $msg.Tier
         $categories = @()
 
+        $allowCategoryOverride = $false
+        if ($null -ne $msg.PSObject.Properties['AllowCategoryOverride']) {
+            try { $allowCategoryOverride = [bool]$msg.AllowCategoryOverride } catch { $allowCategoryOverride = $false }
+        }
+
+        $requestedCategories = @()
         if ($null -ne $msg.PSObject.Properties['Categories'] -and $msg.Categories) {
-            $categories = @($msg.Categories | Where-Object { $_ })
+            $requestedCategories = @($msg.Categories)
         }
-        elseif ($script:SiftrCategoryRules.ContainsKey($tierClean)) {
-            $categories = @($script:SiftrCategoryRules[$tierClean])
-        }
+
+        $categories = @(_Resolve-SiftrCategories -Tier $msg.Tier -RequestedCategories $requestedCategories -AllowOverride:$allowCategoryOverride)
 
         $targetFolder = $script:SiftrFolderRules[$tierClean]
         if ($categories.Count -eq 0 -and -not $targetFolder) {
