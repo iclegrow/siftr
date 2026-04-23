@@ -579,13 +579,13 @@
             html += `<div class="tile-expanded" id="exp-${e.id}" style="max-height:${expanded ? 'none' : '0'}">`;
             html += `<div class="expanded-inner">`;
             html += `<div class="expanded-label">FULL SUMMARY</div>`;
-            html += `<div class="expanded-content">${e.summaryFull || '<em>No expanded summary available</em>'}</div>`;
+            html += `<div class="expanded-content">${this.safeSummaryHtml(e.summaryFull)}</div>`;
 
             // Action text field
             const actionVal = this.esc(e.actionText || '');
             html += `<div class="action-field-wrap">`;
-            html += `<div class="action-label">⚡ ACTION</div>`;
-            html += `<input class="action-input" type="text" placeholder="e.g. Create a to-do, Reply thanks for the update…" value="${actionVal}" data-action-id="${e.id}" onchange="App.setAction('${e.id}', this.value)" oninput="App.setAction('${e.id}', this.value)" />`;
+            html += `<div class="action-label">⚡ YOUR ACTION</div>`;
+            html += `<input class="action-input" type="text" placeholder="Type your own action, e.g. Create a to-do…" value="${actionVal}" data-action-id="${e.id}" onchange="App.setAction('${e.id}', this.value)" oninput="App.setAction('${e.id}', this.value)" />`;
             html += `</div>`;
 
             html += `</div></div>`;
@@ -603,6 +603,39 @@
         const d = document.createElement('div');
         d.textContent = s || '';
         return d.innerHTML;
+      },
+
+      safeSummaryHtml(html) {
+        if (!html) return '<em>No expanded summary available</em>';
+
+        const allowedTags = new Set(['UL', 'OL', 'LI', 'STRONG', 'EM', 'MARK', 'BR', 'P']);
+        const template = document.createElement('template');
+        template.innerHTML = html;
+
+        const sanitizeNode = (node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            return this.esc(node.textContent || '');
+          }
+
+          if (node.nodeType !== Node.ELEMENT_NODE) {
+            return '';
+          }
+
+          const tag = node.tagName.toUpperCase();
+          if (!allowedTags.has(tag)) {
+            return this.esc(node.textContent || '');
+          }
+
+          if (tag === 'BR') {
+            return '<br>';
+          }
+
+          const children = Array.from(node.childNodes).map(sanitizeNode).join('');
+          const tagName = tag.toLowerCase();
+          return `<${tagName}>${children}</${tagName}>`;
+        };
+
+        return Array.from(template.content.childNodes).map(sanitizeNode).join('') || '<em>No expanded summary available</em>';
       },
 
       toggleExpand(id) {

@@ -130,7 +130,7 @@ Once set up, your daily routine is:
 | When | What to say | What happens |
 |---|---|---|
 | Morning | `siftr` | Triages new mail since last run |
-| All day | `siftr loop` | Auto-triages hourly until 7pm — set and forget |
+| All day | `siftr loop` | Auto-triages hourly until 8pm — set and forget |
 | Quick scan | `siftr digest` | Opens a tile-based inbox view in browser |
 | After digest | `siftr process my digest` | Marks reviewed emails as read |
 | Occasional | `siftr learn` | Processes your review corrections into rules |
@@ -151,7 +151,7 @@ Once set up, your daily routine is:
 | `siftr process my digest` | Apply mark-read selections from digest |
 | `siftr status` | Show config, org cache age, learning count |
 | `siftr dry-run` | Classify without applying any Outlook changes |
-| `siftr loop` | Auto-triage hourly until 7pm |
+| `siftr loop` | Auto-triage hourly until 8pm |
 | `siftr stop` | Stop the loop |
 
 ---
