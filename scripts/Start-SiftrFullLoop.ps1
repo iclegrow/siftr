@@ -762,6 +762,7 @@ function New-DigestPromptRecord {
 function Get-LlmDecisions {
     param(
         [Parameter(Mandatory)][array]$PromptRecords,
+        $State,
         [switch]$IncludeSummaries
     )
 
@@ -782,6 +783,10 @@ function Get-LlmDecisions {
     } | ConvertTo-Json -Depth 20 -Compress
 
     foreach ($chunk in (Split-IntoChunks -Items $PromptRecords -ChunkSize $chunkSize)) {
+        if ($State) {
+            Update-LoopHeartbeatIfNeeded -State $State -Reason (if ($IncludeSummaries) { 'digest-classifying' } else { 'classifying' }) -MinimumSeconds 15
+        }
+
         $payload = $chunk | ConvertTo-Json -Depth 30 -Compress
         $summaryInstructions = if ($IncludeSummaries) {
 @"
@@ -846,6 +851,10 @@ $payload
                 summaryShort = if ($IncludeSummaries) { Trim-Text -Text ([string]$decision.summaryShort) -MaxLength 280 } else { '' }
                 summaryFull = if ($IncludeSummaries) { [string]$decision.summaryFull } else { '' }
             })
+        }
+
+        if ($State) {
+            Update-LoopHeartbeatIfNeeded -State $State -Reason (if ($IncludeSummaries) { 'digest-classifying' } else { 'classifying' }) -MinimumSeconds 0
         }
     }
 
@@ -1055,6 +1064,7 @@ function Stop-ReviewServer {
 
 function Run-DigestSlot {
     param(
+        [Parameter(Mandatory)]$State,
         [Parameter(Mandatory)][string]$SlotUtc,
         [Parameter(Mandatory)]$User,
         [Parameter(Mandatory)]$Config,
@@ -1092,7 +1102,7 @@ function Run-DigestSlot {
         }
     }
 
-    $decisions = @(Get-LlmDecisions -PromptRecords @($promptRecords) -IncludeSummaries)
+    $decisions = @(Get-LlmDecisions -PromptRecords @($promptRecords) -State $State -IncludeSummaries)
     $emails = [System.Collections.Generic.List[object]]::new()
 
     foreach ($decision in $decisions) {
@@ -1165,7 +1175,7 @@ function Run-Cycle {
     $classifications = [System.Collections.Generic.List[object]]::new()
     if ($threads.Count -gt 0) {
         $promptRecords = @($threads | ForEach-Object { $_.promptRecord })
-        $decisions = @(Get-LlmDecisions -PromptRecords $promptRecords)
+        $decisions = @(Get-LlmDecisions -PromptRecords $promptRecords -State $State)
         $decisionMap = @{}
         foreach ($decision in $decisions) { $decisionMap[[string]$decision.id] = $decision }
 
@@ -1206,7 +1216,7 @@ function Run-PendingDigests {
     foreach ($slot in @($State.digestSlots)) {
         if ([string]$slot -in @($State.digestsCompleted)) { continue }
         if ((Get-UtcDateTime -Timestamp ([string]$slot)) -le [datetime]::UtcNow) {
-            Run-DigestSlot -SlotUtc ([string]$slot) -User $User -Config $Config -Org $Org
+            Run-DigestSlot -State $State -SlotUtc ([string]$slot) -User $User -Config $Config -Org $Org
             $State.digestsCompleted = @(@($State.digestsCompleted) + [string]$slot | Select-Object -Unique)
             Save-LoopState -State $State -HeartbeatReason 'digest-complete'
         }
