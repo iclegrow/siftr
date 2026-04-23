@@ -45,7 +45,7 @@ Write-Host ""
 
 # Add to PS profile
 $profilePath = $PROFILE
-$sourceLine = ". `"$modulePath`""
+$sourceLine = "if (Test-Path `"$modulePath`") { . `"$modulePath`" }"
 
 if (-not (Test-Path $profilePath)) {
     New-Item -Path $profilePath -ItemType File -Force | Out-Null
