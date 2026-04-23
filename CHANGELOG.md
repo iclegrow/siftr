@@ -5,6 +5,34 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-23 — Reliability: loop ownership, atomic state writes, crash cleanup
+
+- **Loop owner metadata added**: `loop-state.json` now records the active
+  runner's `runnerId`, `pid`, `parentPid`, `host`, `scriptPath`, and a rolling
+  `heartbeatAt` so Siftr can tell a live loop from an abandoned one.
+- **Duplicate full loops prevented**: a new `Start-SiftrFullLoop.ps1` instance
+  now detects other live copies of the same script and exits instead of racing
+  an already-running loop.
+- **Abandoned state resumes immediately**: if `loop-state.json` is still
+  `active` but no other loop runner is alive, the next launch now resumes that
+  state immediately instead of waiting for the old 90-minute stale window to
+  expire.
+- **Crash / unexpected-exit cleanup**: the runner now marks the loop
+  `stopped` with `stopReason` / `lastError` if it crashes or exits while the
+  state is still active, avoiding the exact "active at 9:00 AM with no agent"
+  failure mode.
+- **Atomic state writes**: loop state JSON is now written via temp-file replace
+  instead of direct overwrite, which is safer in a OneDrive-synced personal
+  folder.
+- **Copilot subprocess timeout**: the full-loop runner now kills and fails a
+  stuck `copilot` classification subprocess after a bounded timeout instead of
+  hanging forever mid-cycle with `status: "active"`.
+- Source: the 2026-04-23 full LLM loop resumed on top of older state, ran an
+  8:54 AM cycle, then left `loop-state.json` active with `nextCycleAt` at
+  9:00 AM after the background agent was gone.
+
+---
+
 ## 2026-04-22 — Loop: default final cycle moved to 8 PM
 
 - **Later default stop time**: `siftr loop` now defaults to **8:00 PM local**

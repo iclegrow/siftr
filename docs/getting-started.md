@@ -181,6 +181,7 @@ Everything personal lives in your data directory (default `~/.siftr/`),
 | Review UI won't open | Check Node.js is installed: `node --version` |
 | Org chart empty | Run `siftr refresh org` — needs WorkIQ access |
 | Categories not showing | Open Outlook → View → Categories → verify they exist |
+| Loop looks active but nothing happens | Run `siftr loop` again — recent builds recover abandoned loop state immediately and refuse duplicate live runners |
 | Want to start over | Delete your `~/.siftr/` folder and run `siftr setup` |
 
 ---
