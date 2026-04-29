@@ -116,6 +116,8 @@ siftr/                            ← repo root
   digest-server/                  - Inbox digest UI
     server.js                     - Zero-dep Node.js HTTP server (:8474)
     public/index.html
+  scripts/
+    Start-SiftrFullLoop.ps1       - Standalone full-loop runner with recovery
   docs/
     getting-started.md            - New user guide
   README.md                       - This file
@@ -129,7 +131,7 @@ Personal data directory (e.g. ~/.siftr/):
   last-scan.json                  - Last triage timestamp
   learnings/                      - Triage review JSON files
   digests/                        - Digest JSON files
-  loop-state.json                 - Loop mode state
+  loop-state.json                 - Loop mode state + runner heartbeat metadata
 ```
 
 ## Learning Mode

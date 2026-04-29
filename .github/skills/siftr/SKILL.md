@@ -815,6 +815,12 @@ start an automated triage loop that runs every hour on the hour.
 4. **Check for stale state:** If `loop-state.json` exists with
    `status: "active"` but `nextCycleAt` is in the past by more than
    90 minutes, treat it as an abandoned loop — reset and start fresh.
+   Also inspect the active loop runner:
+   - If another live `Start-SiftrFullLoop.ps1` process already exists, do not
+     start a second copy.
+   - If `loop-state.json` is still active but no live runner exists, treat the
+     state as recoverable and resume it immediately rather than waiting for the
+     stale window to expire.
 5. **Resume support:** If `loop-state.json` exists with `status: "active"`
    and `nextCycleAt` is in the future (or recently passed), **resume** from
    that point rather than reinitializing. Print:
@@ -838,10 +844,23 @@ start an automated triage loop that runs every hour on the hour.
     "startedAt": "2026-04-17T09:00:00Z",
     "endTime": "2026-04-18T00:00:00Z",
     "nextCycleAt": "2026-04-17T17:00:00Z",
+    "lastCycleStartedAt": "2026-04-17T16:58:00Z",
     "lastCycleCompletedAt": "2026-04-17T16:02:00Z",
+    "heartbeatAt": "2026-04-17T16:58:04Z",
+    "lastHeartbeatReason": "sleeping|cycle-start|cycle-complete|scheduled",
+    "owner": {
+      "runnerId": "8d1f3c6f-90fe-4cda-b9ce-123456789abc",
+      "pid": 12345,
+      "parentPid": 6789,
+      "host": "WORKSTATION",
+      "scriptPath": "c:\\users\\me\\siftr\\scripts\\start-siftrfullloop.ps1"
+    },
     "digestSlots": ["2026-04-17T19:00:00Z", "2026-04-18T00:00:00Z"],
     "digestsCompleted": ["2026-04-17T19:00:00Z"],
     "cycleCount": 7,
+    "stoppedAt": null,
+    "stopReason": null,
+    "lastError": null,
     "stats": {
       "totalEmails": 45,
       "urgent": 2,
@@ -855,8 +874,12 @@ start an automated triage loop that runs every hour on the hour.
   ```
 - **Write this file after every state change** (cycle start, cycle end,
   digest complete, loop stop). Use BOM-free UTF-8.
+- **Write atomically** (temp file + replace) so OneDrive sync or concurrent
+  readers do not observe a half-written JSON file.
 - **Do not overload `last-scan.json`** — that remains the simple triage
   bookmark; `loop-state.json` tracks the loop scheduler.
+- When the state is `active`, update the `owner` and `heartbeatAt` fields on
+  every save so a future launch can tell whether the loop is still truly alive.
 
 ### 11c. Triage cycle
 
@@ -902,6 +925,9 @@ lighter output:
    for any period they want.
 8. **Update loop state** — increment `cycleCount`, accumulate tier stats,
    set `lastCycleCompletedAt`.
+9. **On any crash / unexpected exit:** write `status: "stopped"`,
+   `stopReason`, `stoppedAt`, and `lastError` before the runner exits so the
+   next launch is not stuck behind a fake `active` state.
 
 ### 11d. Digest triggers
 
