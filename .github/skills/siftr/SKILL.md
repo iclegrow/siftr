@@ -525,9 +525,13 @@ field to one of:
 
 ### 6d. Launch the review server
 
-After writing the JSON, start the review server:
+After writing the JSON, shut down any existing review server instance and
+start a fresh one:
 
 ```powershell
+# Shut down any running review server first
+try { Invoke-RestMethod -Uri http://localhost:8473/api/shutdown -Method POST | Out-Null } catch {}
+
 $personalDir = Get-SiftrPersonalPath
 $jsonPath = Join-Path $personalDir "learnings\siftr-{timestamp}.json"
 $serverScript = "$SiftrRoot\review-server\server.js"
