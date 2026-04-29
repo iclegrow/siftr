@@ -535,7 +535,7 @@ try { Invoke-RestMethod -Uri http://localhost:8473/api/shutdown -Method POST | O
 $personalDir = Get-SiftrPersonalPath
 $jsonPath = Join-Path $personalDir "learnings\siftr-{timestamp}.json"
 $serverScript = "$SiftrRoot\review-server\server.js"
-Start-Process node -ArgumentList "`"$serverScript`" `"$jsonPath`"" -WindowStyle Hidden
+Start-Process node -ArgumentList "`"$serverScript`" `"$jsonPath`"" -NoNewWindow
 ```
 
 Tell the user:
