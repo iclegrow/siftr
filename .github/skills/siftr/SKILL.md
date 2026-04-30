@@ -88,7 +88,8 @@ reference manager, directs, and peers by email address.
 3. If the cache is missing or the user says **"siftr refresh org"**, resolve
    the org chart via WorkIQ:
    - Ask WorkIQ: "Who is my manager? Who are my direct reports? Who are my peers
-     (people who share my manager)?"
+     (people who share my manager)? Also, who is CEO Person and who are his
+     direct reports?"
    - Save the result to `org-cache.json` in the personal-data directory in
      this format:
      ```json
@@ -96,7 +97,11 @@ reference manager, directs, and peers by email address.
        "refreshed": "2026-04-03T05:00:00Z",
        "manager": { "name": "...", "email": "..." },
        "directs": [{ "name": "...", "email": "..." }],
-       "peers": [{ "name": "...", "email": "..." }]
+       "peers": [{ "name": "...", "email": "..." }],
+       "slt": {
+         "ceo": { "name": "CEO Person", "email": "..." },
+         "directs": [{ "name": "...", "email": "..." }]
+       }
      }
      ```
 4. Keep the resolved names/emails in working memory for classification.
@@ -123,8 +128,12 @@ Use the Outlook COM helper `Get-SiftrInboxRootMessages` from
      rather than the end-of-run clock time. This prevents mail that arrives
      during the run from landing between the fetch snapshot and the bookmark:
      ```json
-      { "lastScanCompleted": "2026-04-09T16:30:00Z" }
-      ```
+       { "lastScanCompleted": "2026-04-09T16:30:00Z" }
+       ```
+- **Backlog rule:** when Siftr is scanning with `-SkipCategorized`, the
+  last-scan bookmark does **not** hide older uncategorized Inbox-root mail.
+  Any uncategorized backlog still in the Inbox remains eligible until it is
+  categorized or moved.
 - **Custom window:** The user may say "siftr since Monday", "siftr last 3 days",
   etc. Convert to an appropriate `Since` value. The last-scan bookmark is still
   updated at the end of the run.
@@ -333,6 +342,9 @@ heuristics below.
   questions or requests clarification (the user still needs to act)
 
 #### 🟢⬆ PRIORITY INFORMED
+- Sender is in the cached **SLT** section of `org-cache.json` — specifically
+  **CEO Person** or one of his direct reports. This is a universal Phase 1
+  rule and should classify as 🟢⬆ even before reading the body.
 - **Reply completing a user request** — the user previously asked for
   something and this reply delivers the answer or confirms the action is done;
   no further action needed from the user
@@ -847,6 +859,7 @@ start an automated triage loop that runs every hour on the hour.
     "lastCycleStartedAt": "2026-04-17T16:58:00Z",
     "lastCycleCompletedAt": "2026-04-17T16:02:00Z",
     "heartbeatAt": "2026-04-17T16:58:04Z",
+    "leaseExpiresAt": "2026-04-17T17:03:04Z",
     "lastHeartbeatReason": "sleeping|cycle-start|cycle-complete|scheduled",
     "owner": {
       "runnerId": "8d1f3c6f-90fe-4cda-b9ce-123456789abc",
@@ -861,6 +874,17 @@ start an automated triage loop that runs every hour on the hour.
     "stoppedAt": null,
     "stopReason": null,
     "lastError": null,
+    "consecutiveFailures": 0,
+    "lastSuccessfulCycleAt": "2026-04-17T16:02:00Z",
+    "lastFailureAt": null,
+    "lastFailurePhase": null,
+    "degradedModeCount": 1,
+    "quarantinedCount": 0,
+    "consecutiveZeroCycles": 0,
+    "lastNonZeroCycleAt": "2026-04-17T16:02:00Z",
+    "lastDiagnosticAt": "2026-04-17T16:02:00Z",
+    "lastDiagnosticResult": "not-needed|verified-zero|verified-zero-watch|anomaly-recovered|outside-hours",
+    "lastFallbackCount": 0,
     "stats": {
       "totalEmails": 45,
       "urgent": 2,
@@ -880,6 +904,8 @@ start an automated triage loop that runs every hour on the hour.
   bookmark; `loop-state.json` tracks the loop scheduler.
 - When the state is `active`, update the `owner` and `heartbeatAt` fields on
   every save so a future launch can tell whether the loop is still truly alive.
+- Track **degraded mode and quarantine counts** so repeated LLM issues are
+  visible in state instead of silently disappearing into the log.
 
 ### 11c. Triage cycle
 
@@ -894,6 +920,17 @@ lighter output:
    - If the first fetch returns **0 or 1 items**, immediately repeat the same
      fetch once before concluding the Inbox window is drained. Outlook COM can
      occasionally under-enumerate a live Inbox collection.
+   - If the triage fetch still returns **0 items during the 8 AM-8 PM workday
+     window**, run a bounded diagnostic against **today since 12:01 AM**:
+     compare unread Inbox-root mail and uncategorized Inbox-root mail before
+     trusting the zero.
+   - If that fallback diagnostic finds mail, emit a `scan_anomaly` event, log a
+     warning, and immediately rerun triage with the wider bounded window so the
+     loop can recover without waiting for the user to notice.
+   - If the fallback diagnostic also finds nothing, record the verified zero in
+     `loop-state.json`. After **2 consecutive verified zero-result work-hour
+     cycles**, escalate to a stronger warning so a broken Outlook view or fetch
+     path is visible in the logs.
 3. **Classify** (§3) — full Phase 1 + Phase 2 classification.
    - **Do not use subject-only shortcuts for reply threads.** If a message is a
      reply/forward, the user is on **To**, or the subject looks informational
@@ -909,6 +946,11 @@ lighter output:
    When a classification object includes `ConversationId`, the latest
    conversation decision is applied to all still-uncategorized Inbox-root
    siblings in that thread.
+   - If a single message cannot be classified by the LLM, fall back to the
+     local heuristic classifier for that item instead of failing the whole
+     cycle.
+   - If both the LLM path and fallback path fail for a message, quarantine that
+     item, record it in the loop event log, and continue with the rest.
 5. **Update `last-scan.json`** with the cycle's **fetch-start UTC time**, not
    the clock time at the end of the cycle.
 6. **Skip full briefing** (§4) — instead, print a one-liner:
@@ -920,9 +962,16 @@ lighter output:
    ⏰ 2:00 PM: 8 emails — 1🔴 2🟠 3🟢⬆ 1🟢 1⚪
       🔴 [MSApprovalNotifications] "PO# 101626216 — $19,867 pending approval"
    ```
-7. **Skip learning export** (§6) — no learnings JSON, no review server.
-   The user can run a full interactive `siftr` later to export learnings
-   for any period they want.
+7. **Keep loop learning active** — each cycle merges its classifications into a
+   day-scoped JSON in `learnings/` and keeps the review server running at
+   `http://localhost:8473` so the user can give feedback throughout the day.
+   - Use **one row per unique email** (key by message ID). If the exact same
+     message is reprocessed, update that row with the latest classification
+     while preserving any existing `userOverride` / `notes`.
+   - If a sender resends the mail as a **new message**, keep it as a separate
+     row so the user can correct it independently.
+   - At the start of the next day's loop, switch to a fresh date-scoped review
+     JSON so the active review cache resets for the new day.
 8. **Update loop state** — increment `cycleCount`, accumulate tier stats,
    set `lastCycleCompletedAt`.
 9. **On any crash / unexpected exit:** write `status: "stopped"`,
@@ -949,7 +998,9 @@ After each triage cycle, check for pending digest slots:
       ```
       📬 5 PM digest ready at http://localhost:8474 — say "siftr process my digest" when ready
       ```
-   d. Add the slot timestamp to `digestsCompleted` in the loop state.
+    d. Add the slot timestamp to `digestsCompleted` in the loop state.
+3. A digest failure must be **non-fatal** to the scheduler. Record the failure
+   in state and the event log, then continue toward the next cycle.
 
 This slot-tracking approach ensures:
 - A digest is never skipped (even if a cycle runs late).

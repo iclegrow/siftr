@@ -333,7 +333,9 @@ function Get-SiftrInboxRootMessages {
         follow-up action scope. Only messages currently in the Inbox root are
         returned; subfolders are intentionally excluded.
     .PARAMETER Since
-        Lower bound for ReceivedTime. Defaults to 24 hours ago.
+        Lower bound for ReceivedTime. Defaults to 24 hours ago. When
+        -SkipCategorized is set, uncategorized Inbox-root backlog remains
+        eligible even if it predates this bookmark.
     .PARAMETER Limit
         Maximum number of messages to return. Defaults to 100.
     .PARAMETER IncludeRead
@@ -386,8 +388,8 @@ function Get-SiftrInboxRootMessages {
             if ($results.Count -ge $Limit) { break }
             if (-not (_Is-SiftrEligibleInboxItem -Item $item)) { continue }
             if (-not $IncludeRead -and $item.UnRead -ne $true) { continue }
-            if ($item.ReceivedTime -lt $Since) { continue }
             if ($SkipCategorized -and -not [string]::IsNullOrWhiteSpace($item.Categories)) { continue }
+            if (-not $SkipCategorized -and $item.ReceivedTime -lt $Since) { continue }
 
             $results.Add((_ConvertTo-SiftrInboxRecord -Item $item))
         }

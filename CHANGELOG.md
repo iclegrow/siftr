@@ -5,6 +5,124 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-29 — Zero-result diagnostics and guarded recovery
+
+- **Zero-email work-hour cycles now self-check**: when a loop cycle returns
+  zero messages during the 8 AM-8 PM workday window, Siftr now runs a bounded
+  diagnostic against a wider "today since 12:01 AM" Inbox-root window before
+  trusting the zero result.
+- **Scan anomalies are explicit**: if the primary scan returns zero but the
+  fallback diagnostic still finds unread or uncategorized Inbox-root mail,
+  Siftr emits `scan_anomaly` events, logs a warning, and immediately retries
+  triage with the wider bounded window.
+- **Loop health state now tracks quiet periods**: `loop-state.json` records
+  `consecutiveZeroCycles`, `lastNonZeroCycleAt`, `lastDiagnosticAt`,
+  `lastDiagnosticResult`, and `lastFallbackCount` so repeated zero-email work
+  cycles can be distinguished from a genuinely quiet inbox.
+
+---
+
+## 2026-04-29 — Inbox backlog fix: uncategorized mail survives restarts
+
+- **Uncategorized Inbox backlog is no longer hidden by `last-scan.json`**:
+  `Get-SiftrInboxRootMessages -SkipCategorized` now keeps older uncategorized
+  Inbox-root mail eligible even when it predates the bookmark.
+- **Restart-safe triage behavior**: after a crash or restart, Siftr now keeps
+  seeing previously unprocessed Inbox-root mail until it is actually categorized
+  or moved, instead of silently skipping it because the bookmark advanced.
+
+---
+
+## 2026-04-29 — Loop classifier diagnostics: fix false LLM-failure labeling
+
+- **Copilot wrapper hardened for Windows PowerShell 5.1**: loop mode now trusts
+  the CLI's structured `result.exitCode` event instead of relying only on the
+  polled `Process.ExitCode`, which can be blank in the detached runner even when
+  the Copilot call actually succeeded.
+- **Learning records now separate classification source from diagnostics**:
+  review rows now include `classificationSource`, `diagnosticCode`, and
+  `fallbackNote`, so user-facing fields no longer imply an LLM failure when the
+  fallback path was triggered by a runtime issue.
+- **`uncertainty` is now classification-only**: loop review rows only populate
+  `uncertainty` for low-confidence LLM decisions, not for heuristic fallback or
+  process-wrapper problems.
+- **Archived loop logs now live under `siftr_personal\Logs`**: daily rotation
+  and retention now move dated `loop-run.*` / `loop-events.*` files into a
+  dedicated `Logs` subfolder, and legacy root-level archives are migrated there
+  during normal cleanup writes.
+
+---
+
+## 2026-04-29 — Universal rule: SLT mail is always priority informed
+
+- **New universal Phase 1 rule**: mail from **CEO Person** or one of his
+  direct reports now automatically classifies as **PRIORITY INFORMED**.
+- **Org cache schema extended**: `org-cache.json` now documents an `slt`
+  section with `ceo` and `directs`, so the rule can be driven from cached
+  org data instead of hard-coded mail addresses.
+- **Loop fallback logic updated**: the local heuristic classifier now treats
+  `slt` senders as a high-confidence Phase 1 `PRIORITY INFORMED` decision, and
+  prompt records expose `senderRelation = slt` so the LLM path sees the same
+  relationship.
+
+---
+
+## 2026-04-29 — Loop learning: always-on daily review feed
+
+- **Loop mode now keeps learning active**: each hourly cycle merges its
+  classifications into a day-scoped review JSON in `siftr_personal/learnings/`
+  instead of skipping learning export entirely.
+- **One row per unique email**: loop review data is keyed by unique message ID,
+  so the same message is updated in place if reprocessed while true resends
+  still appear as separate rows.
+- **Review server is now kept alive during loop mode**: the loop initializes
+  the review file at startup, launches `review-server` against it, and
+  re-starts the server automatically if it is shut down mid-day.
+- **Daily reset is automatic**: the active loop review file rolls over to a new
+  date-named JSON at the start of the next day's loop, effectively clearing the
+  live review cache without destroying prior daily history files.
+
+---
+
+## 2026-04-27 — Loop hygiene: daily log rotation and 7-day retention
+
+- **Loop logs now rotate automatically by day**: `loop-run.log` and
+  `loop-events.jsonl` are rolled to dated archive files on the first write of a
+  new day instead of growing forever as single append-only files.
+- **Seven-day retention added**: archived loop logs older than 7 days are
+  deleted automatically during normal loop writes, keeping the personal data
+  folder tidy without affecting the live `loop-state.json` / `last-scan.json`
+  files.
+- **No scheduler dependency on old logs**: rotation is implemented directly in
+  the append helpers, so loop execution still treats the logs as write-only
+  diagnostics rather than reading large history files back into the scheduler.
+
+---
+
+## 2026-04-24 — Reliability: degraded mode, failure counters, and loop events
+
+- **Scheduler is no longer fail-stop**: cycle failures and digest failures are
+  now caught and recorded without killing the outer loop. The runner preserves
+  state, logs the error, and schedules the next cycle instead of exiting.
+- **Per-item degraded mode added**: when an individual Copilot classification
+  fails, the loop now falls back to a local heuristic classifier for that
+  thread or digest item instead of failing the whole cycle.
+- **Bad items are quarantined instead of killing the pass**: if both the LLM
+  path and fallback path fail for a specific message, the loop records that
+  item as quarantined and continues processing the rest of the Inbox.
+- **Structured event log added**: the runner now writes `loop-events.jsonl`
+  alongside `loop-run.log` so degraded decisions, quarantined items, phase
+  failures, and lifecycle transitions are machine-readable.
+- **Richer runtime state added**: `loop-state.json` now tracks
+  `leaseExpiresAt`, `consecutiveFailures`, `lastSuccessfulCycleAt`,
+  `lastFailureAt`, `lastFailurePhase`, `degradedModeCount`, and
+  `quarantinedCount` for better recovery and diagnostics.
+- **Heartbeat stays alive during long Copilot calls**: the subprocess wait loop
+  now refreshes the loop heartbeat while the CLI is running, reducing false
+  stale-runner detection during long LLM work.
+
+---
+
 ## 2026-04-23 — Reliability: loop ownership, atomic state writes, crash cleanup
 
 - **Loop owner metadata added**: `loop-state.json` now records the active

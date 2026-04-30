@@ -165,7 +165,7 @@ Everything personal lives in your data directory (default `~/.siftr/`),
 |---|---|---|
 | `config.json` | Settings: folders, categories, ports | `siftr setup` |
 | `rules.md` | Your classification rules | `siftr learn` |
-| `org-cache.json` | Your manager, directs, peers | `siftr refresh org` |
+| `org-cache.json` | Your manager, directs, peers, and SLT cache | `siftr refresh org` |
 | `last-scan.json` | Timestamp of last triage | Automatic |
 | `learnings/*.json` | Review history | Review UI |
 | `digests/*.json` | Digest history | Digest UI |

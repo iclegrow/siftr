@@ -90,7 +90,7 @@ Siftr stores personal data in a configurable location (discovered in order):
 |---|---|---|
 | `config.json` | Mechanical settings: folders, categories, ports, org domain | `siftr setup` |
 | `rules.md` | Personal classification rules (people, DLs, topics) | `siftr learn` |
-| `org-cache.json` | Manager, direct reports, peers | `siftr refresh org` |
+| `org-cache.json` | Manager, direct reports, peers, and cached SLT | `siftr refresh org` |
 
 ### First-run experience
 
