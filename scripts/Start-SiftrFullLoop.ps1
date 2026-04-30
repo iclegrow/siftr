@@ -29,22 +29,57 @@ $LoopScriptPath = (Join-Path $SiftrRoot 'scripts\Start-SiftrFullLoop.ps1').ToLow
 
 Add-Type -AssemblyName System.Web
 
+function Resolve-SinglePathValue {
+    param(
+        [Parameter(Mandatory)]$Value,
+        [string]$FieldName = 'path'
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @($Value)) {
+        $text = [string]$candidate
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        foreach ($piece in ($text -split ' (?=[A-Za-z]:\\)')) {
+            if ([string]::IsNullOrWhiteSpace($piece)) { continue }
+            [void]$candidates.Add($piece.Trim())
+        }
+    }
+
+    $unique = @($candidates | Select-Object -Unique)
+    if ($unique.Count -eq 1) {
+        return [string]$unique[0]
+    }
+    if ($unique.Count -eq 0) {
+        throw "Missing $FieldName value."
+    }
+
+    throw "Expected a single $FieldName value but found: $($unique -join ' | ')"
+}
+
 function Write-Utf8Json {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)]$Object
     )
 
-    $json = $Object | ConvertTo-Json -Depth 50
-    $directory = Split-Path -Parent $Path
-    if ($directory) {
-        $null = New-Item -ItemType Directory -Path $directory -Force
+    $Path = Resolve-SinglePathValue -Value $Path -FieldName 'JSON path'
+    $resolvedPath = try {
+        [System.IO.Path]::GetFullPath($Path)
+    }
+    catch {
+        throw "Invalid JSON path '$Path': $($_.Exception.Message)"
     }
 
-    $tempPath = "$Path.$PID.tmp"
+    $json = $Object | ConvertTo-Json -Depth 50
+    $directory = [System.IO.Path]::GetDirectoryName($resolvedPath)
+    if ($directory) {
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    }
+
+    $tempPath = "$resolvedPath.$PID.tmp"
     try {
         [System.IO.File]::WriteAllText($tempPath, $json, $Utf8NoBom)
-        Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        Move-Item -LiteralPath $tempPath -Destination $resolvedPath -Force
     }
     finally {
         if (Test-Path -LiteralPath $tempPath) {
@@ -360,7 +395,8 @@ function Ensure-LoopReviewStateFields {
 
     $dateKey = Get-LoopReviewDateKey -State $State
     Set-StateProperty -State $State -Name 'reviewDateLocal' -Value $dateKey
-    Set-StateProperty -State $State -Name 'reviewDataPath' -Value (Get-LoopReviewDataPath -DateKey $dateKey)
+    $reviewPath = Resolve-SinglePathValue -Value (Get-LoopReviewDataPath -DateKey $dateKey) -FieldName 'loop review path'
+    Set-StateProperty -State $State -Name 'reviewDataPath' -Value $reviewPath
 }
 
 function Get-OtherLoopProcesses {
@@ -728,12 +764,16 @@ function Update-CycleHealthState {
     Set-StateProperty -State $State -Name 'lastDiagnosticAt' -Value ([datetime]::UtcNow).ToString('o')
 
     if ($MessageCount -gt 0) {
+        $diagnosticResult = 'not-needed'
+        $fallbackCount = 0
+        if ($Diagnostic) {
+            $diagnosticResult = if ([string]$Diagnostic.outcome -eq 'scan-anomaly') { 'anomaly-recovered' } else { [string]$Diagnostic.outcome }
+            $fallbackCount = [int]$Diagnostic.fallbackUncategorizedCount
+        }
         Set-StateProperty -State $State -Name 'consecutiveZeroCycles' -Value 0
         Set-StateProperty -State $State -Name 'lastNonZeroCycleAt' -Value ([datetime]::UtcNow).ToString('o')
-        Set-StateProperty -State $State -Name 'lastDiagnosticResult' -Value (if ($Diagnostic) {
-            if ([string]$Diagnostic.outcome -eq 'scan-anomaly') { 'anomaly-recovered' } else { [string]$Diagnostic.outcome }
-        } else { 'not-needed' })
-        Set-StateProperty -State $State -Name 'lastFallbackCount' -Value (if ($Diagnostic) { [int]$Diagnostic.fallbackUncategorizedCount } else { 0 })
+        Set-StateProperty -State $State -Name 'lastDiagnosticResult' -Value $diagnosticResult
+        Set-StateProperty -State $State -Name 'lastFallbackCount' -Value $fallbackCount
         return
     }
 
@@ -744,9 +784,15 @@ function Update-CycleHealthState {
     }
 
     $zeroCount = [int]$State.consecutiveZeroCycles + 1
+    $diagnosticResult = 'zero-no-diagnostic'
+    $fallbackCount = 0
+    if ($Diagnostic) {
+        $diagnosticResult = [string]$Diagnostic.outcome
+        $fallbackCount = [int]$Diagnostic.fallbackUncategorizedCount
+    }
     Set-StateProperty -State $State -Name 'consecutiveZeroCycles' -Value $zeroCount
-    Set-StateProperty -State $State -Name 'lastDiagnosticResult' -Value (if ($Diagnostic) { [string]$Diagnostic.outcome } else { 'zero-no-diagnostic' })
-    Set-StateProperty -State $State -Name 'lastFallbackCount' -Value (if ($Diagnostic) { [int]$Diagnostic.fallbackUncategorizedCount } else { 0 })
+    Set-StateProperty -State $State -Name 'lastDiagnosticResult' -Value $diagnosticResult
+    Set-StateProperty -State $State -Name 'lastFallbackCount' -Value $fallbackCount
 }
 
 function Emit-CycleFailureStatus {
@@ -1492,9 +1538,13 @@ function Set-DecisionDiagnostics {
         [AllowEmptyString()][string]$DiagnosticCode
     )
 
+    $fallbackNote = ''
+    if ($ClassificationSource -eq 'heuristic') {
+        $fallbackNote = Get-ClassifierFallbackNote -DiagnosticCode $DiagnosticCode
+    }
     $Decision | Add-Member -NotePropertyName classificationSource -NotePropertyValue $ClassificationSource -Force
     $Decision | Add-Member -NotePropertyName diagnosticCode -NotePropertyValue ([string]$DiagnosticCode) -Force
-    $Decision | Add-Member -NotePropertyName fallbackNote -NotePropertyValue (if ($ClassificationSource -eq 'heuristic') { Get-ClassifierFallbackNote -DiagnosticCode $DiagnosticCode } else { '' }) -Force
+    $Decision | Add-Member -NotePropertyName fallbackNote -NotePropertyValue $fallbackNote -Force
     if ($ClassificationSource -ne 'llm') {
         $Decision | Add-Member -NotePropertyName uncertainty -NotePropertyValue '' -Force
     }
@@ -2117,14 +2167,14 @@ function New-LoopState {
     $endLocal = Get-DefaultEndTimeLocal
     if ($now -ge $endLocal) {
         if (-not $AllowAfterHours) {
-            Write-LoopLog 'Siftr loop not started: the 8:00 PM end time has already passed.'
+            $null = Write-LoopLog 'Siftr loop not started: the 8:00 PM end time has already passed.'
             return $null
         }
 
         # Allow an explicit one-off recovery run after hours without reopening
         # the full hourly loop window.
         $endLocal = $now.AddMinutes(5)
-        Write-LoopLog '[manual] Starting one-off siftr recovery cycle after the normal 8:00 PM end time.'
+        $null = Write-LoopLog '[manual] Starting one-off siftr recovery cycle after the normal 8:00 PM end time.'
     }
 
     $todaySlots = @(Get-TodayDigestSlotsUtc)
@@ -2199,6 +2249,7 @@ function Start-DigestServer {
 function Start-ReviewServer {
     param([Parameter(Mandatory)][string]$JsonPath)
     $serverScript = Join-Path $SiftrRoot 'review-server\server.js'
+    $JsonPath = Resolve-SinglePathValue -Value $JsonPath -FieldName 'review JSON path'
     Start-Process -FilePath node -ArgumentList @("`"$serverScript`"", "`"$JsonPath`"") -WindowStyle Hidden | Out-Null
 }
 
@@ -2233,7 +2284,8 @@ function Initialize-LoopReviewStore {
 
     Ensure-LoopReviewStateFields -State $State
     $null = New-Item -ItemType Directory -Path $LearningDir -Force
-    $path = [string]$State.reviewDataPath
+    $path = Resolve-SinglePathValue -Value $State.reviewDataPath -FieldName 'loop review path'
+    Set-StateProperty -State $State -Name 'reviewDataPath' -Value $path
     $existing = Read-JsonFile -Path $path
     $document = New-LoopReviewDocument -State $State -ExistingDocument $existing
     Write-Utf8Json -Path $path -Object $document
@@ -2299,7 +2351,8 @@ function Update-LoopReviewStore {
     )
 
     Ensure-LoopReviewStateFields -State $State
-    $path = [string]$State.reviewDataPath
+    $path = Resolve-SinglePathValue -Value $State.reviewDataPath -FieldName 'loop review path'
+    Set-StateProperty -State $State -Name 'reviewDataPath' -Value $path
     $document = New-LoopReviewDocument -State $State -ExistingDocument (Read-JsonFile -Path $path)
     $existingById = @{}
 
@@ -2329,6 +2382,8 @@ function Ensure-ReviewServerRunning {
     param([Parameter(Mandatory)]$State)
 
     Ensure-LoopReviewStateFields -State $State
+    $reviewPath = Resolve-SinglePathValue -Value $State.reviewDataPath -FieldName 'review JSON path'
+    Set-StateProperty -State $State -Name 'reviewDataPath' -Value $reviewPath
     try {
         $response = Invoke-RestMethod -Uri 'http://localhost:8473/api/data' -Method GET -ErrorAction Stop
         if ($response -and $response.emails -ne $null) { return }
@@ -2336,7 +2391,7 @@ function Ensure-ReviewServerRunning {
     catch {}
 
     Stop-ReviewServer
-    Start-ReviewServer -JsonPath ([string]$State.reviewDataPath)
+    Start-ReviewServer -JsonPath $reviewPath
     Write-LoopLog ("[review] Review server ready at http://localhost:8473 for {0}" -f [string]$State.reviewDateLocal)
 }
 
@@ -2468,16 +2523,18 @@ function Run-Cycle {
     }
 
     $cycleLocal = Get-Date
+    $messageLimit = if ($RunOneCycleNow) { 25 } else { 100 }
     $fetchStartedUtc = [datetime]::UtcNow
     $State.lastCycleStartedAt = $fetchStartedUtc.ToString('o')
     Save-LoopState -State $State -HeartbeatReason 'cycle-start'
     Write-LoopEvent -Type 'cycle_stage' -Message 'Cycle started' -Data @{ stage = 'cycle-start'; since = $since.ToString('o') }
-    $messages = @(Get-TriageInboxMessages -Since $since -Limit 100 -State $State)
+    $messages = @(Get-TriageInboxMessages -Since $since -Limit $messageLimit -State $State)
     $diagnostic = $null
     if ($messages.Count -eq 0) {
         $diagnostic = Invoke-ZeroResultDiagnostics -State $State -Since $since -CycleLocal $cycleLocal
         if ($diagnostic.shouldRecover) {
-            $messages = @(Get-TriageInboxMessages -Since $diagnostic.recoverySince -Limit $diagnostic.recoveryLimit -State $State -Stage 'fetching-inbox-recovery' -RetryStage 'fetching-inbox-recovery-retry' -HeartbeatReason 'fetching-inbox-recovery' -RetryHeartbeatReason 'fetching-inbox-recovery-retry' -Message 'Recovering from zero-result anomaly with wider inbox scan')
+            $recoveryLimit = if ($RunOneCycleNow) { [Math]::Min([int]$diagnostic.recoveryLimit, 25) } else { [int]$diagnostic.recoveryLimit }
+            $messages = @(Get-TriageInboxMessages -Since $diagnostic.recoverySince -Limit $recoveryLimit -State $State -Stage 'fetching-inbox-recovery' -RetryStage 'fetching-inbox-recovery-retry' -HeartbeatReason 'fetching-inbox-recovery' -RetryHeartbeatReason 'fetching-inbox-recovery-retry' -Message 'Recovering from zero-result anomaly with wider inbox scan')
         }
     }
     $threads = @(Convert-TriageMessagesToThreads -User $User -Config $Config -Messages $messages -State $State)
@@ -2488,9 +2545,21 @@ function Run-Cycle {
 
     $classifications = [System.Collections.Generic.List[object]]::new()
     $reviewEntries = [System.Collections.Generic.List[object]]::new()
+    $useHeuristicOnly = [bool]$RunOneCycleNow
     if ($threads.Count -gt 0) {
         Write-LoopEvent -Type 'cycle_stage' -Message 'Beginning per-thread classification' -Data @{ stage = 'classifying'; threadCount = $threads.Count }
         foreach ($thread in $threads) {
+            if ($useHeuristicOnly) {
+                try {
+                    $decision = Get-HeuristicDecision -Latest $thread.latest -ThreadRecords @($thread.threadRecords) -User $User -Config $Config -Org $Org
+                    $decision = Set-DecisionDiagnostics -Decision $decision -ClassificationSource 'heuristic' -DiagnosticCode 'manual-recovery'
+                }
+                catch {
+                    Register-Quarantine -State $State -Phase 'triage' -ItemId ([string]$thread.id) -Subject ([string]$thread.latest.Subject) -ErrorText $_.Exception.Message
+                    continue
+                }
+            }
+            else {
             try {
                 $decision = @(Get-LlmDecisions -PromptRecords @($thread.promptRecord) -State $State)[0]
             }
@@ -2505,6 +2574,7 @@ function Run-Cycle {
                     Register-Quarantine -State $State -Phase 'triage' -ItemId ([string]$thread.id) -Subject ([string]$thread.latest.Subject) -ErrorText $_.Exception.Message
                     continue
                 }
+            }
             }
 
             $classifications.Add([pscustomobject]@{
@@ -2632,7 +2702,6 @@ try {
             Schedule-CycleFailure -State $state -CycleLocal $cycleFailureLocal -ErrorText $_.Exception.Message
         }
         $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
-        Run-PendingDigests -State $state -User $user -Config $config -Org $org
         if ($cycleSucceeded) {
             $nextBoundaryLocal = Get-NextCycleBoundaryLocal -After (Get-Date)
             if ($nextBoundaryLocal.ToUniversalTime() -gt (Get-UtcDateTime -Timestamp ([string]$state.endTime))) {

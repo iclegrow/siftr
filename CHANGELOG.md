@@ -5,6 +5,23 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-29 — Manual backlog recovery now completes reliably
+
+- **After-hours one-off recovery runs no longer corrupt loop state**:
+  `New-LoopState` now suppresses helper log output so `loop-state.json` stays a
+  single state object instead of accidentally becoming an array.
+- **Loop review path handling is normalized**: review JSON paths are now reduced
+  to one canonical path before writing files or launching the review server, so
+  duplicated path values cannot crash startup.
+- **Manual recovery batches are bounded and practical**: one-off recovery runs
+  now process a smaller inbox slice per pass and use the local heuristic
+  classifier directly, avoiding long LLM stalls while clearing backlog.
+- **Manual recovery no longer hangs in digest generation**: after a one-off
+  recovery cycle succeeds, the runner finalizes immediately instead of launching
+  digest work for the same after-hours pass.
+
+---
+
 ## 2026-04-29 — Zero-result diagnostics and guarded recovery
 
 - **Zero-email work-hour cycles now self-check**: when a loop cycle returns
