@@ -5,6 +5,34 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-04-30 — Loop mode now skips auto-digests and records classifier drift
+
+- **Digest stays manual while loop mode focuses on triage**: `siftr loop` no
+  longer shuts down or launches the digest server on its own. Digest capability
+  is still available through the manual `siftr digest` flow.
+- **Hourly loop contract is simpler and safer**: the scheduler now runs triage,
+  review-store updates, and state persistence only, reducing cross-feature
+  coupling during long unattended runs.
+- **Heuristic-vs-LLM comparison metrics are now recorded**: each successful LLM
+  triage decision is shadow-compared against the local heuristic classifier and
+  `loop-state.json` now accumulates sample count, exact-match count, tier
+  disagreements, and action/urgent boundary disagreements.
+- **Loop triage now ignores historical Inbox backlog**: hourly loop cycles and
+  one-off recovery cycles are capped to the most recent 72 hours of mail, even
+  when older Inbox-root messages remain uncategorized. This keeps pre-Siftr
+  backlog out of the loop's critical path and focuses automation on current
+  mail only.
+- **Thread loading no longer rescans the Inbox once per conversation**: loop
+  triage now builds a single per-cycle conversation index for the active
+  threads, then enriches those records in place. This removes the worst
+  repeated Inbox-scan multiplier from `thread-loading`.
+- **One-off recovery can now target an explicit window and batch size**:
+  `Start-SiftrFullLoop.ps1 -RunOneCycleNow` accepts an override `Since` and
+  message limit, which makes guarded drain runs like "all of today" possible
+  without mutating the normal loop bookmark logic first.
+
+---
+
 ## 2026-04-29 — Manual backlog recovery now completes reliably
 
 - **After-hours one-off recovery runs no longer corrupt loop state**:

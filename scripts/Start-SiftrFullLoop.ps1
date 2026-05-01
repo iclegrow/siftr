@@ -1,6 +1,8 @@
 param(
     [switch]$ValidateOnly,
     [switch]$RunOneCycleNow,
+    [datetime]$SinceOverride,
+    [int]$MessageLimitOverride = 0,
     [string]$SiftrRoot = '<local-path>',
     [string]$PersonalDir = '<local-path> - Microsoft\AI-Tools\siftr_personal'
 )
@@ -23,6 +25,7 @@ $CopilotExe = (Get-Command copilot -ErrorAction Stop).Source
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $LoopRunnerId = [guid]::NewGuid().ToString()
 $LogRetentionDays = 7
+$LoopRecentWindowHours = 72
 $CurrentProcessInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue
 $CurrentParentProcessId = if ($CurrentProcessInfo) { [int]$CurrentProcessInfo.ParentProcessId } else { -1 }
 $LoopScriptPath = (Join-Path $SiftrRoot 'scripts\Start-SiftrFullLoop.ps1').ToLowerInvariant()
@@ -318,8 +321,25 @@ function Rotate-LoopLogIfNeeded {
 }
 
 function Get-UtcDateTime {
-    param([Parameter(Mandatory)][string]$Timestamp)
-    ([datetimeoffset]::Parse($Timestamp)).UtcDateTime
+    param([Parameter(Mandatory)]$Timestamp)
+
+    if ($Timestamp -is [datetime]) {
+        if ($Timestamp.Kind -eq [System.DateTimeKind]::Utc) {
+            return $Timestamp
+        }
+
+        if ($Timestamp.Kind -eq [System.DateTimeKind]::Local) {
+            return $Timestamp.ToUniversalTime()
+        }
+
+        return [datetime]::SpecifyKind($Timestamp, [System.DateTimeKind]::Utc)
+    }
+
+    if ($Timestamp -is [datetimeoffset]) {
+        return $Timestamp.UtcDateTime
+    }
+
+    ([datetimeoffset]::Parse([string]$Timestamp)).UtcDateTime
 }
 
 function New-LoopOwner {
@@ -360,7 +380,8 @@ function Ensure-ResilienceStateFields {
         @{ Name = 'lastNonZeroCycleAt'; Value = $null },
         @{ Name = 'lastDiagnosticAt'; Value = $null },
         @{ Name = 'lastDiagnosticResult'; Value = $null },
-        @{ Name = 'lastFallbackCount'; Value = 0 }
+        @{ Name = 'lastFallbackCount'; Value = 0 },
+        @{ Name = 'shadowComparison'; Value = ([pscustomobject](New-ShadowComparisonMetrics)) }
     )) {
         if (-not $State.PSObject.Properties[$pair.Name]) {
             Set-StateProperty -State $State -Name $pair.Name -Value $pair.Value
@@ -377,7 +398,7 @@ function Get-LoopReviewDateKey {
 
     if ($State -and $State.startedAt) {
         try {
-            return (Get-UtcDateTime -Timestamp ([string]$State.startedAt)).ToLocalTime().ToString('yyyy-MM-dd')
+            return (Get-UtcDateTime -Timestamp $State.startedAt).ToLocalTime().ToString('yyyy-MM-dd')
         }
         catch {}
     }
@@ -448,7 +469,7 @@ function Update-LoopHeartbeatIfNeeded {
 
     $lastHeartbeatUtc = [datetime]::MinValue
     if ($State.heartbeatAt) {
-        try { $lastHeartbeatUtc = Get-UtcDateTime -Timestamp ([string]$State.heartbeatAt) } catch {}
+        try { $lastHeartbeatUtc = Get-UtcDateTime -Timestamp $State.heartbeatAt } catch {}
     }
 
     if (([datetime]::UtcNow - $lastHeartbeatUtc).TotalSeconds -ge $MinimumSeconds) {
@@ -470,6 +491,81 @@ function Stop-LoopState {
         Set-StateProperty -State $State -Name 'lastError' -Value $ErrorText
     }
     Save-LoopState -State $State -HeartbeatReason $Reason
+}
+
+function New-ShadowComparisonMetrics {
+    [ordered]@{
+        samples = 0
+        llmSuccesses = 0
+        heuristicFallbacks = 0
+        exactMatches = 0
+        tierDisagreements = 0
+        actionBoundaryDisagreements = 0
+        urgentBoundaryDisagreements = 0
+        lastUpdated = $null
+    }
+}
+
+function Get-DecisionActionBucket {
+    param([Parameter(Mandatory)][string]$Tier)
+
+    if ($Tier -in @('URGENT ACTION', 'ACTION NEEDED')) { return 'action' }
+    if ($Tier -eq 'CALENDAR') { return 'calendar' }
+    'inform'
+}
+
+function Get-DecisionUrgencyBucket {
+    param([Parameter(Mandatory)][string]$Tier)
+
+    if ($Tier -in @('URGENT ACTION', 'PRIORITY INFORMED')) { return 'urgent' }
+    'non-urgent'
+}
+
+function Update-CycleComparisonMetrics {
+    param(
+        [Parameter(Mandatory)]$CycleMetrics,
+        [Parameter(Mandatory)]$ActualDecision,
+        [Parameter(Mandatory)]$HeuristicDecision
+    )
+
+    $CycleMetrics.samples = [int]$CycleMetrics.samples + 1
+    if ([string]$ActualDecision.tier -eq [string]$HeuristicDecision.tier) {
+        $CycleMetrics.exactMatches = [int]$CycleMetrics.exactMatches + 1
+    }
+    else {
+        $CycleMetrics.tierDisagreements = [int]$CycleMetrics.tierDisagreements + 1
+    }
+
+    if ((Get-DecisionActionBucket -Tier ([string]$ActualDecision.tier)) -ne (Get-DecisionActionBucket -Tier ([string]$HeuristicDecision.tier))) {
+        $CycleMetrics.actionBoundaryDisagreements = [int]$CycleMetrics.actionBoundaryDisagreements + 1
+    }
+
+    if ((Get-DecisionUrgencyBucket -Tier ([string]$ActualDecision.tier)) -ne (Get-DecisionUrgencyBucket -Tier ([string]$HeuristicDecision.tier))) {
+        $CycleMetrics.urgentBoundaryDisagreements = [int]$CycleMetrics.urgentBoundaryDisagreements + 1
+    }
+}
+
+function Merge-LoopComparisonMetrics {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)]$CycleMetrics
+    )
+
+    Ensure-ResilienceStateFields -State $State
+    $existing = if ($State.shadowComparison) { $State.shadowComparison } else { [pscustomobject](New-ShadowComparisonMetrics) }
+
+    $merged = [ordered]@{
+        samples = [int]$existing.samples + [int]$CycleMetrics.samples
+        llmSuccesses = [int]$existing.llmSuccesses + [int]$CycleMetrics.llmSuccesses
+        heuristicFallbacks = [int]$existing.heuristicFallbacks + [int]$CycleMetrics.heuristicFallbacks
+        exactMatches = [int]$existing.exactMatches + [int]$CycleMetrics.exactMatches
+        tierDisagreements = [int]$existing.tierDisagreements + [int]$CycleMetrics.tierDisagreements
+        actionBoundaryDisagreements = [int]$existing.actionBoundaryDisagreements + [int]$CycleMetrics.actionBoundaryDisagreements
+        urgentBoundaryDisagreements = [int]$existing.urgentBoundaryDisagreements + [int]$CycleMetrics.urgentBoundaryDisagreements
+        lastUpdated = ([datetime]::UtcNow).ToString('o')
+    }
+
+    Set-StateProperty -State $State -Name 'shadowComparison' -Value ([pscustomobject]$merged)
 }
 
 function Register-LoopSuccess {
@@ -556,6 +652,36 @@ function Get-DefaultEndTimeLocal {
     (Get-Date).Date.AddHours(20)
 }
 
+function Get-LoopRecentCutoffLocal {
+    (Get-Date).AddHours(-$LoopRecentWindowHours)
+}
+
+function Get-EffectiveLoopSince {
+    param([Parameter(Mandatory)][datetime]$Candidate)
+
+    $recentCutoffLocal = Get-LoopRecentCutoffLocal
+    if ($Candidate.Kind -eq [System.DateTimeKind]::Utc) {
+        $Candidate = $Candidate.ToLocalTime()
+    }
+
+    if ($Candidate -lt $recentCutoffLocal) {
+        return $recentCutoffLocal
+    }
+
+    $Candidate
+}
+
+function Filter-LoopMessagesBySince {
+    param(
+        [AllowEmptyCollection()][array]$Messages = @(),
+        [Parameter(Mandatory)][datetime]$Since
+    )
+
+    @($Messages | Where-Object {
+        try { $_.ReceivedTime -ge $Since } catch { $false }
+    })
+}
+
 function Get-NextCycleBoundaryLocal {
     param([datetime]$After)
 
@@ -598,20 +724,114 @@ function Get-TriageInboxMessages {
         [string]$Message = 'Fetching inbox root messages'
     )
 
-    if ($State) {
-        Update-LoopHeartbeatIfNeeded -State $State -Reason $HeartbeatReason -MinimumSeconds 0
-    }
-    Write-LoopEvent -Type 'cycle_stage' -Message $Message -Data @{ stage = $Stage; since = $Since.ToString('o'); limit = $Limit }
-    $messages = @(Get-SiftrInboxRootMessages -Since $Since -Limit $Limit -IncludeRead -SkipCategorized)
-    if ($messages.Count -le 1) {
-        if ($State) {
-            Update-LoopHeartbeatIfNeeded -State $State -Reason $RetryHeartbeatReason -MinimumSeconds 0
+    $mergeMessages = {
+        param(
+            [AllowEmptyCollection()][array]$Existing = @(),
+            [AllowEmptyCollection()][array]$Incoming = @()
+        )
+
+        $merged = [System.Collections.Generic.List[object]]::new()
+        $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($message in @($Existing) + @($Incoming)) {
+            $key = [string]$message.InternetMessageId
+            if ([string]::IsNullOrWhiteSpace($key)) {
+                $key = [string]$message.EntryId
+            }
+            if ([string]::IsNullOrWhiteSpace($key)) {
+                $key = "{0}|{1}" -f [string]$message.ConversationId, [string]$message.ReceivedDateTime
+            }
+            if (-not $seen.Add($key)) { continue }
+            $merged.Add($message)
         }
-        Write-LoopEvent -Type 'cycle_stage' -Message 'Retrying inbox fetch due to low item count' -Data @{ stage = $RetryStage; initialCount = $messages.Count; since = $Since.ToString('o'); limit = $Limit }
-        $messages = @(Get-SiftrInboxRootMessages -Since $Since -Limit $Limit -IncludeRead -SkipCategorized)
+
+        @($merged | Sort-Object ReceivedTime -Descending)
+    }
+
+    $maxAttempts = 3
+    $messages = @()
+    $previousMergedCount = -1
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $isRetry = $attempt -gt 1
+        if ($State) {
+            Update-LoopHeartbeatIfNeeded -State $State -Reason $(if ($isRetry) { $RetryHeartbeatReason } else { $HeartbeatReason }) -MinimumSeconds 0
+        }
+
+        if ($isRetry) {
+            Write-LoopEvent -Type 'cycle_stage' -Message 'Retrying inbox fetch to stabilize Outlook enumeration' -Data @{
+                stage = $RetryStage
+                attempt = $attempt
+                mergedCount = $messages.Count
+                since = $Since.ToString('o')
+                limit = $Limit
+            }
+        }
+        else {
+            Write-LoopEvent -Type 'cycle_stage' -Message $Message -Data @{ stage = $Stage; since = $Since.ToString('o'); limit = $Limit }
+        }
+
+        $attemptMessages = Filter-LoopMessagesBySince -Messages @(Get-SiftrInboxRootMessages -Since $Since -Limit $Limit -IncludeRead -SkipCategorized) -Since $Since
+        $messages = & $mergeMessages -Existing $messages -Incoming $attemptMessages
+
+        if ($messages.Count -ge $Limit) { break }
+        if ($messages.Count -eq $previousMergedCount) { break }
+        $previousMergedCount = $messages.Count
     }
 
     @($messages)
+}
+
+function New-ConversationRecordLookup {
+    param(
+        [AllowEmptyCollection()][array]$Messages = @(),
+        [switch]$IncludeCategorized,
+        [switch]$IncludeRead,
+        $State
+    )
+
+    $conversationIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($message in $Messages) {
+        $conversationId = [string]$message.ConversationId
+        if ([string]::IsNullOrWhiteSpace($conversationId)) { continue }
+        [void]$conversationIds.Add($conversationId)
+    }
+
+    if ($conversationIds.Count -eq 0) {
+        return @{}
+    }
+
+    if ($State) {
+        Update-LoopHeartbeatIfNeeded -State $State -Reason 'thread-indexing' -MinimumSeconds 0
+    }
+    Write-LoopEvent -Type 'cycle_stage' -Message 'Indexing Inbox conversations for triage threads' -Data @{
+        stage = 'thread-indexing'
+        conversationCount = $conversationIds.Count
+    }
+
+    $lookup = @{}
+    foreach ($conversationId in $conversationIds) {
+        $lookup[$conversationId] = [System.Collections.Generic.List[object]]::new()
+    }
+
+    $inbox = _Get-OutlookInbox
+    foreach ($item in (_Get-SiftrFolderItemsSnapshot -Folder $inbox)) {
+        if (-not (_Is-SiftrEligibleInboxItem -Item $item)) { continue }
+
+        $conversationId = [string]$item.ConversationID
+        if ([string]::IsNullOrWhiteSpace($conversationId)) { continue }
+        if (-not $lookup.ContainsKey($conversationId)) { continue }
+        if (-not $IncludeRead -and $item.UnRead -ne $true) { continue }
+        if (-not $IncludeCategorized -and -not [string]::IsNullOrWhiteSpace([string]$item.Categories)) { continue }
+
+        $lookup[$conversationId].Add((_ConvertTo-SiftrInboxRecord -Item $item))
+    }
+
+    Write-LoopEvent -Type 'cycle_stage' -Message 'Indexed Inbox conversations for triage threads' -Data @{
+        stage = 'thread-indexed'
+        conversationCount = $lookup.Count
+    }
+
+    $lookup
 }
 
 function Convert-TriageMessagesToThreads {
@@ -631,6 +851,8 @@ function Convert-TriageMessagesToThreads {
     $threads = [System.Collections.Generic.List[object]]::new()
     $threadLoadFailures = 0
     $index = 0
+    $org = Read-JsonFile -Path $OrgPath
+    $conversationLookup = New-ConversationRecordLookup -Messages $Messages -IncludeRead -IncludeCategorized -State $State
     foreach ($group in ($Messages | Group-Object {
         if ([string]::IsNullOrWhiteSpace([string]$_.ConversationId)) { [string]$_.InternetMessageId } else { [string]$_.ConversationId }
     })) {
@@ -641,19 +863,28 @@ function Convert-TriageMessagesToThreads {
             }
             $seed = $group.Group | Sort-Object ReceivedTime -Descending | Select-Object -First 1
             $threadRecords = if (-not [string]::IsNullOrWhiteSpace([string]$seed.ConversationId)) {
-                @(Get-SiftrConversationRootMessages -ConversationId ([string]$seed.ConversationId) -IncludeRead -IncludeCategorized)
+                if ($conversationLookup.ContainsKey([string]$seed.ConversationId)) {
+                    @($conversationLookup[[string]$seed.ConversationId] | Sort-Object ReceivedTime -Descending)
+                }
+                else {
+                    @()
+                }
             } else {
                 @($seed)
+            }
+
+            if ($threadRecords.Count -eq 0) {
+                $threadRecords = @($seed)
             }
 
             foreach ($threadRecord in $threadRecords) {
                 $item = $User.Namespace.GetItemFromID($threadRecord.EntryId)
                 $threadRecord | Add-Member -NotePropertyName SenderSmtp -NotePropertyValue (Resolve-SmtpAddress -Item $item) -Force
-                $threadRecord | Add-Member -NotePropertyName FullBody -NotePropertyValue (Get-BodyText -Namespace $User.Namespace -EntryId $threadRecord.EntryId) -Force
+                $threadRecord | Add-Member -NotePropertyName FullBody -NotePropertyValue (Get-BodyText -Namespace $User.Namespace -EntryId $threadRecord.EntryId -Item $item) -Force
             }
 
             $latest = $threadRecords | Sort-Object ReceivedTime -Descending | Select-Object -First 1
-            $promptRecord = New-ThreadPromptRecord -Id ("triage-$index") -Latest $latest -ThreadRecords $threadRecords -User $User -Config $Config -Org (Read-JsonFile -Path $OrgPath)
+            $promptRecord = New-ThreadPromptRecord -Id ("triage-$index") -Latest $latest -ThreadRecords $threadRecords -User $User -Config $Config -Org $org
             $threads.Add([pscustomobject]@{
                 id = $promptRecord.id
                 latest = $latest
@@ -711,7 +942,7 @@ function Invoke-ZeroResultDiagnostics {
 
     $primaryUnread = @(Get-SiftrInboxRootMessages -Since $Since -Limit 200)
     $fallbackUnread = @(Get-SiftrInboxRootMessages -Since $fallbackSince -Limit 200)
-    $fallbackUncategorized = @(Get-SiftrInboxRootMessages -Since $fallbackSince -Limit 200 -IncludeRead -SkipCategorized)
+    $fallbackUncategorized = Filter-LoopMessagesBySince -Messages @(Get-SiftrInboxRootMessages -Since $fallbackSince -Limit 200 -IncludeRead -SkipCategorized) -Since $fallbackSince
 
     $result.primaryUnreadCount = $primaryUnread.Count
     $result.fallbackUnreadCount = $fallbackUnread.Count
@@ -826,10 +1057,10 @@ function Schedule-CycleFailure {
 
     Ensure-ResilienceStateFields -State $State
 
-    $endTimeUtc = Get-UtcDateTime -Timestamp ([string]$State.endTime)
+    $endTimeUtc = Get-UtcDateTime -Timestamp $State.endTime
     $nextHourlyLocal = $null
     if ($State.retryFallbackCycleAt) {
-        try { $nextHourlyLocal = (Get-UtcDateTime -Timestamp ([string]$State.retryFallbackCycleAt)).ToLocalTime() } catch {}
+        try { $nextHourlyLocal = (Get-UtcDateTime -Timestamp $State.retryFallbackCycleAt).ToLocalTime() } catch {}
     }
     if (-not $nextHourlyLocal) {
         $nextHourlyLocal = Get-NextCycleBoundaryLocal -After $CycleLocal
@@ -1112,14 +1343,22 @@ function Ensure-SltOrgCache {
 function Get-BodyText {
     param(
         [Parameter(Mandatory)]$Namespace,
-        [AllowEmptyString()][string]$EntryId
+        [AllowEmptyString()][string]$EntryId,
+        $Item
     )
+
+    try {
+        if ($Item -and $Item.Body) {
+            return (($Item.Body -replace '\s+', ' ').Trim())
+        }
+    }
+    catch {}
 
     if ([string]::IsNullOrWhiteSpace($EntryId)) { return '' }
     try {
-        $item = $Namespace.GetItemFromID($EntryId)
-        if ($item -and $item.Body) {
-            return (($item.Body -replace '\s+', ' ').Trim())
+        $resolvedItem = $Namespace.GetItemFromID($EntryId)
+        if ($resolvedItem -and $resolvedItem.Body) {
+            return (($resolvedItem.Body -replace '\s+', ' ').Trim())
         }
     }
     catch {}
@@ -2055,7 +2294,7 @@ function Get-DigestRecords {
             }
             $item = $User.Namespace.GetItemFromID($record.EntryId)
             $record | Add-Member -NotePropertyName SenderSmtp -NotePropertyValue (Resolve-SmtpAddress -Item $item) -Force
-            $record | Add-Member -NotePropertyName FullBody -NotePropertyValue (Get-BodyText -Namespace $User.Namespace -EntryId $record.EntryId) -Force
+            $record | Add-Member -NotePropertyName FullBody -NotePropertyValue (Get-BodyText -Namespace $User.Namespace -EntryId $record.EntryId -Item $item) -Force
             $record | Add-Member -NotePropertyName FolderName -NotePropertyValue (Get-ParentFolderName -Item $item) -Force
         }
         catch {
@@ -2094,7 +2333,8 @@ function Emit-CycleSummary {
     param(
         [Parameter(Mandatory)][datetime]$CycleLocal,
         [AllowEmptyCollection()][array]$Classifications = @(),
-        $Diagnostic = $null
+        $Diagnostic = $null,
+        $ComparisonMetrics = $null
     )
 
     $urgent = @($Classifications | Where-Object Tier -eq 'URGENT ACTION')
@@ -2121,6 +2361,17 @@ function Emit-CycleSummary {
             }
         }
     }
+    if ($ComparisonMetrics -and [int]$ComparisonMetrics.samples -gt 0) {
+        Write-LoopLog ("[diag] Shadow compare: {0} LLM samples, {1} exact, {2} tier diffs, {3} action-boundary diffs, {4} urgent-boundary diffs" -f `
+            [int]$ComparisonMetrics.samples,
+            [int]$ComparisonMetrics.exactMatches,
+            [int]$ComparisonMetrics.tierDisagreements,
+            [int]$ComparisonMetrics.actionBoundaryDisagreements,
+            [int]$ComparisonMetrics.urgentBoundaryDisagreements)
+    }
+    if ($ComparisonMetrics -and [int]$ComparisonMetrics.heuristicFallbacks -gt 0) {
+        Write-LoopLog ("[diag] Classifier fallbacks this cycle: {0}" -f [int]$ComparisonMetrics.heuristicFallbacks)
+    }
     foreach ($item in $urgent) {
         Write-LoopLog ("   [URGENT] [{0}] ""{1}""" -f $item.FromName, $item.Subject)
     }
@@ -2129,7 +2380,8 @@ function Emit-CycleSummary {
 function Update-Stats {
     param(
         [Parameter(Mandatory)]$State,
-        [AllowEmptyCollection()][array]$Classifications = @()
+        [AllowEmptyCollection()][array]$Classifications = @(),
+        $ComparisonMetrics = $null
     )
 
     $State.cycleCount = [int]$State.cycleCount + 1
@@ -2145,6 +2397,9 @@ function Update-Stats {
         Ensure-ResilienceStateFields -State $State
         Set-StateProperty -State $State -Name 'lastNonZeroCycleAt' -Value ([datetime]::UtcNow).ToString('o')
         Set-StateProperty -State $State -Name 'consecutiveZeroCycles' -Value 0
+    }
+    if ($ComparisonMetrics) {
+        Merge-LoopComparisonMetrics -State $State -CycleMetrics $ComparisonMetrics
     }
 }
 
@@ -2215,6 +2470,7 @@ function New-LoopState {
         lastDiagnosticAt = $null
         lastDiagnosticResult = $null
         lastFallbackCount = 0
+        shadowComparison = [pscustomobject](New-ShadowComparisonMetrics)
         reviewDateLocal = (Get-Date).ToString('yyyy-MM-dd')
         reviewDataPath = (Get-LoopReviewDataPath -DateKey ((Get-Date).ToString('yyyy-MM-dd')))
         stats = [ordered]@{
@@ -2237,7 +2493,14 @@ function Finalize-Loop {
 
     Write-LoopLog ("[complete] Siftr loop complete - {0} cycles, {1} emails triaged" -f $State.cycleCount, $State.stats.totalEmails)
     Write-LoopLog ("   U {0}  A {1}  PI {2}  I {3}  L {4}  C {5}" -f $State.stats.urgent, $State.stats.action, $State.stats.priorityInformed, $State.stats.informed, $State.stats.lowPriority, $State.stats.calendar)
-    Write-LoopLog ("   Digests delivered: {0}" -f @($State.digestsCompleted).Count)
+    if ($State.shadowComparison -and [int]$State.shadowComparison.samples -gt 0) {
+        Write-LoopLog ("   Shadow compare: {0} LLM samples, {1} exact, {2} tier diffs, {3} action-boundary diffs, {4} urgent-boundary diffs" -f `
+            [int]$State.shadowComparison.samples,
+            [int]$State.shadowComparison.exactMatches,
+            [int]$State.shadowComparison.tierDisagreements,
+            [int]$State.shadowComparison.actionBoundaryDisagreements,
+            [int]$State.shadowComparison.urgentBoundaryDisagreements)
+    }
 }
 
 function Start-DigestServer {
@@ -2516,24 +2779,48 @@ function Run-Cycle {
         [Parameter(Mandatory)]$Org
     )
 
-    $since = (Get-Date).AddHours(-24)
-    $scan = Read-JsonFile -Path $LastScanPath
-    if ($scan -and $scan.lastScanCompleted) {
-        try { $since = [datetime]$scan.lastScanCompleted } catch {}
+    $bookmarkSince = $null
+    if ($PSBoundParameters.ContainsKey('SinceOverride')) {
+        $bookmarkSince = $SinceOverride
     }
-
+    else {
+        $bookmarkSince = (Get-Date).AddHours(-24)
+        $scan = Read-JsonFile -Path $LastScanPath
+        if ($scan -and $scan.lastScanCompleted) {
+            try { $bookmarkSince = [datetime]$scan.lastScanCompleted } catch {}
+        }
+    }
+    $since = Get-EffectiveLoopSince -Candidate $bookmarkSince
+ 
     $cycleLocal = Get-Date
-    $messageLimit = if ($RunOneCycleNow) { 25 } else { 100 }
+    $messageLimit = if ($MessageLimitOverride -gt 0) {
+        $MessageLimitOverride
+    }
+    elseif ($RunOneCycleNow) {
+        25
+    }
+    else {
+        100
+    }
     $fetchStartedUtc = [datetime]::UtcNow
     $State.lastCycleStartedAt = $fetchStartedUtc.ToString('o')
     Save-LoopState -State $State -HeartbeatReason 'cycle-start'
-    Write-LoopEvent -Type 'cycle_stage' -Message 'Cycle started' -Data @{ stage = 'cycle-start'; since = $since.ToString('o') }
+    Write-LoopEvent -Type 'cycle_stage' -Message 'Cycle started' -Data @{
+        stage = 'cycle-start'
+        since = $since.ToString('o')
+        bookmarkSince = $bookmarkSince.ToString('o')
+        recentWindowHours = $LoopRecentWindowHours
+        recentCapApplied = [bool]($since -gt $bookmarkSince)
+    }
+    if ($since -gt $bookmarkSince) {
+        Write-LoopLog ("[diag] Loop triage capped to recent mail: using {0} instead of bookmark {1}" -f $since.ToString('g'), $bookmarkSince.ToString('g'))
+    }
     $messages = @(Get-TriageInboxMessages -Since $since -Limit $messageLimit -State $State)
     $diagnostic = $null
     if ($messages.Count -eq 0) {
         $diagnostic = Invoke-ZeroResultDiagnostics -State $State -Since $since -CycleLocal $cycleLocal
         if ($diagnostic.shouldRecover) {
-            $recoveryLimit = if ($RunOneCycleNow) { [Math]::Min([int]$diagnostic.recoveryLimit, 25) } else { [int]$diagnostic.recoveryLimit }
+            $recoveryLimit = if ($RunOneCycleNow) { [Math]::Min([int]$diagnostic.recoveryLimit, $messageLimit) } else { [int]$diagnostic.recoveryLimit }
             $messages = @(Get-TriageInboxMessages -Since $diagnostic.recoverySince -Limit $recoveryLimit -State $State -Stage 'fetching-inbox-recovery' -RetryStage 'fetching-inbox-recovery-retry' -HeartbeatReason 'fetching-inbox-recovery' -RetryHeartbeatReason 'fetching-inbox-recovery-retry' -Message 'Recovering from zero-result anomaly with wider inbox scan')
         }
     }
@@ -2545,6 +2832,7 @@ function Run-Cycle {
 
     $classifications = [System.Collections.Generic.List[object]]::new()
     $reviewEntries = [System.Collections.Generic.List[object]]::new()
+    $comparisonMetrics = [pscustomobject](New-ShadowComparisonMetrics)
     $useHeuristicOnly = [bool]$RunOneCycleNow
     if ($threads.Count -gt 0) {
         Write-LoopEvent -Type 'cycle_stage' -Message 'Beginning per-thread classification' -Data @{ stage = 'classifying'; threadCount = $threads.Count }
@@ -2560,21 +2848,38 @@ function Run-Cycle {
                 }
             }
             else {
-            try {
-                $decision = @(Get-LlmDecisions -PromptRecords @($thread.promptRecord) -State $State)[0]
-            }
-            catch {
-                Register-DegradedMode -State $State -Phase 'triage' -ItemId ([string]$thread.id) -ErrorText $_.Exception.Message
                 try {
-                    $diagnosticCode = Get-ClassifierDiagnosticCode -ErrorText $_.Exception.Message
-                    $decision = Get-HeuristicDecision -Latest $thread.latest -ThreadRecords @($thread.threadRecords) -User $User -Config $Config -Org $Org
-                    $decision = Set-DecisionDiagnostics -Decision $decision -ClassificationSource 'heuristic' -DiagnosticCode $diagnosticCode
+                    $shadowDecision = Get-HeuristicDecision -Latest $thread.latest -ThreadRecords @($thread.threadRecords) -User $User -Config $Config -Org $Org
                 }
                 catch {
-                    Register-Quarantine -State $State -Phase 'triage' -ItemId ([string]$thread.id) -Subject ([string]$thread.latest.Subject) -ErrorText $_.Exception.Message
-                    continue
+                    $shadowDecision = $null
                 }
-            }
+
+                try {
+                    $decision = @(Get-LlmDecisions -PromptRecords @($thread.promptRecord) -State $State)[0]
+                    $comparisonMetrics.llmSuccesses = [int]$comparisonMetrics.llmSuccesses + 1
+                    if ($shadowDecision) {
+                        Update-CycleComparisonMetrics -CycleMetrics $comparisonMetrics -ActualDecision $decision -HeuristicDecision $shadowDecision
+                    }
+                }
+                catch {
+                    Register-DegradedMode -State $State -Phase 'triage' -ItemId ([string]$thread.id) -ErrorText $_.Exception.Message
+                    $comparisonMetrics.heuristicFallbacks = [int]$comparisonMetrics.heuristicFallbacks + 1
+                    try {
+                        $diagnosticCode = Get-ClassifierDiagnosticCode -ErrorText $_.Exception.Message
+                        if ($shadowDecision) {
+                            $decision = $shadowDecision
+                        }
+                        else {
+                            $decision = Get-HeuristicDecision -Latest $thread.latest -ThreadRecords @($thread.threadRecords) -User $User -Config $Config -Org $Org
+                        }
+                        $decision = Set-DecisionDiagnostics -Decision $decision -ClassificationSource 'heuristic' -DiagnosticCode $diagnosticCode
+                    }
+                    catch {
+                        Register-Quarantine -State $State -Phase 'triage' -ItemId ([string]$thread.id) -Subject ([string]$thread.latest.Subject) -ErrorText $_.Exception.Message
+                        continue
+                    }
+                }
             }
 
             $classifications.Add([pscustomobject]@{
@@ -2598,11 +2903,20 @@ function Run-Cycle {
     Update-LoopReviewStore -State $State -Entries @($reviewEntries)
     Ensure-ReviewServerRunning -State $State
     Write-Utf8Json -Path $LastScanPath -Object @{ lastScanCompleted = $fetchStartedUtc.ToString('o') }
-    Emit-CycleSummary -CycleLocal $cycleLocal -Classifications @($classifications) -Diagnostic $diagnostic
-    Update-Stats -State $State -Classifications @($classifications)
+    Emit-CycleSummary -CycleLocal $cycleLocal -Classifications @($classifications) -Diagnostic $diagnostic -ComparisonMetrics $comparisonMetrics
+    Update-Stats -State $State -Classifications @($classifications) -ComparisonMetrics $comparisonMetrics
     Clear-CycleRetryState -State $State
     Register-LoopSuccess -State $State -Phase 'cycle'
-    Write-LoopEvent -Type 'cycle_stage' -Message 'Cycle completed' -Data @{ stage = 'cycle-complete'; classificationCount = $classifications.Count }
+    Write-LoopEvent -Type 'cycle_stage' -Message 'Cycle completed' -Data @{
+        stage = 'cycle-complete'
+        classificationCount = $classifications.Count
+        comparisonSamples = [int]$comparisonMetrics.samples
+        comparisonExactMatches = [int]$comparisonMetrics.exactMatches
+        comparisonTierDisagreements = [int]$comparisonMetrics.tierDisagreements
+        comparisonActionBoundaryDisagreements = [int]$comparisonMetrics.actionBoundaryDisagreements
+        comparisonUrgentBoundaryDisagreements = [int]$comparisonMetrics.urgentBoundaryDisagreements
+        heuristicFallbacks = [int]$comparisonMetrics.heuristicFallbacks
+    }
     Save-LoopState -State $State -HeartbeatReason 'cycle-complete'
 }
 
@@ -2657,8 +2971,8 @@ try {
             return
         }
 
-        $nextUtc = Get-UtcDateTime -Timestamp ([string]$existing.nextCycleAt)
-        $endUtc = Get-UtcDateTime -Timestamp ([string]$existing.endTime)
+        $nextUtc = Get-UtcDateTime -Timestamp $existing.nextCycleAt
+        $endUtc = Get-UtcDateTime -Timestamp $existing.endTime
         if ($endUtc -gt [datetime]::UtcNow -and $nextUtc -gt [datetime]::UtcNow.AddMinutes(-90)) {
             $state = $existing
             $resume = $true
@@ -2679,7 +2993,6 @@ try {
 
     $null = New-Item -ItemType Directory -Path $DigestDir -Force
     $null = New-Item -ItemType Directory -Path $LearningDir -Force
-    Stop-DigestServer
     Stop-ReviewServer
     Initialize-LoopReviewStore -State $state
     Ensure-ReviewServerRunning -State $state
@@ -2704,7 +3017,7 @@ try {
         $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
         if ($cycleSucceeded) {
             $nextBoundaryLocal = Get-NextCycleBoundaryLocal -After (Get-Date)
-            if ($nextBoundaryLocal.ToUniversalTime() -gt (Get-UtcDateTime -Timestamp ([string]$state.endTime))) {
+            if ($nextBoundaryLocal.ToUniversalTime() -gt (Get-UtcDateTime -Timestamp $state.endTime)) {
                 Finalize-Loop -State $state
             }
             else {
@@ -2715,15 +3028,15 @@ try {
     }
 
     if ($resume) {
-        $lastCycle = if ($state.lastCycleCompletedAt) { ([datetime]$state.lastCycleCompletedAt).ToLocalTime().ToString('h:mm tt') } else { 'none yet' }
-        Write-LoopLog ("[resume] Resuming siftr loop - last cycle was at {0}, next due at {1}" -f $lastCycle, ([datetime]$state.nextCycleAt).ToLocalTime().ToString('h:mm tt'))
+        $lastCycle = if ($state.lastCycleCompletedAt) { (Get-UtcDateTime -Timestamp $state.lastCycleCompletedAt).ToLocalTime().ToString('h:mm tt') } else { 'none yet' }
+        Write-LoopLog ("[resume] Resuming siftr loop - last cycle was at {0}, next due at {1}" -f $lastCycle, (Get-UtcDateTime -Timestamp $state.nextCycleAt).ToLocalTime().ToString('h:mm tt'))
     }
     else {
         $nextBoundary = Get-NextCycleBoundaryLocal -After (Get-Date)
         Write-LoopLog '[start] Siftr full LLM-driven loop started'
-        Write-LoopLog ("   End time: {0}" -f ([datetime]$state.endTime).ToLocalTime().ToString('h:mm tt'))
+        Write-LoopLog ("   End time: {0}" -f (Get-UtcDateTime -Timestamp $state.endTime).ToLocalTime().ToString('h:mm tt'))
         Write-LoopLog '   Triage: starting now, then every hour on the hour'
-        Write-LoopLog '   Digests: 12:00 PM, 5:00 PM'
+        Write-LoopLog '   Digest: manual only (loop no longer auto-runs digests)'
         Write-LoopLog ("   Next cycle: {0}" -f $nextBoundary.ToString('h:mm tt'))
     }
 
@@ -2736,13 +3049,13 @@ try {
             break
         }
 
-        $endTimeUtc = Get-UtcDateTime -Timestamp ([string]$state.endTime)
+        $endTimeUtc = Get-UtcDateTime -Timestamp $state.endTime
         if ([datetime]::UtcNow -ge $endTimeUtc) {
             Finalize-Loop -State $state
             break
         }
 
-        $nextCycleUtc = Get-UtcDateTime -Timestamp ([string]$state.nextCycleAt)
+        $nextCycleUtc = Get-UtcDateTime -Timestamp $state.nextCycleAt
         if ([datetime]::UtcNow -ge $nextCycleUtc) {
             $cycleSucceeded = $false
             $cycleFailureLocal = $null
@@ -2757,7 +3070,6 @@ try {
                 Schedule-CycleFailure -State $state -CycleLocal $cycleFailureLocal -ErrorText $_.Exception.Message
             }
             $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
-            Run-PendingDigests -State $state -User $user -Config $config -Org $org
 
             if ($cycleSucceeded) {
                 $afterCycle = Get-Date
@@ -2771,11 +3083,11 @@ try {
 
                 if ($state.lastCycleCompletedAt -and $state.nextCycleAt) {
                     try {
-                        $lastCycleUtc = Get-UtcDateTime -Timestamp ([string]$state.lastCycleCompletedAt)
-                        $nextCycleUtc = Get-UtcDateTime -Timestamp ([string]$state.nextCycleAt)
+                        $lastCycleUtc = Get-UtcDateTime -Timestamp $state.lastCycleCompletedAt
+                        $nextCycleUtc = Get-UtcDateTime -Timestamp $state.nextCycleAt
                         if ($nextCycleUtc -le $lastCycleUtc) {
                             $repairBoundaryLocal = Get-NextCycleBoundaryLocal -After $lastCycleUtc.ToLocalTime()
-                            if ($repairBoundaryLocal.ToUniversalTime() -le (Get-UtcDateTime -Timestamp ([string]$state.endTime))) {
+                            if ($repairBoundaryLocal.ToUniversalTime() -le (Get-UtcDateTime -Timestamp $state.endTime)) {
                                 Set-NextCycleAt -State $state -NextLocal $repairBoundaryLocal -HeartbeatReason 'schedule-repair'
                             }
                         }
@@ -2787,7 +3099,7 @@ try {
                 Write-LoopLog ("[sleep] Next cycle: {0} ({1} min)" -f $nextBoundaryLocal.ToString('h:mm tt'), $sleepMinutes)
             }
             else {
-                $scheduledNextLocal = (Get-UtcDateTime -Timestamp ([string]$state.nextCycleAt)).ToLocalTime()
+                $scheduledNextLocal = (Get-UtcDateTime -Timestamp $state.nextCycleAt).ToLocalTime()
                 $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($scheduledNextLocal - (Get-Date)).TotalMinutes))
                 Write-LoopLog ("[sleep] Next cycle: {0} ({1} min)" -f $scheduledNextLocal.ToString('h:mm tt'), $sleepMinutes)
             }

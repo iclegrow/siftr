@@ -820,11 +820,7 @@ start an automated triage loop that runs every hour on the hour.
    - The user may specify a custom end time (e.g., "siftr loop until 5pm").
    - If current time is already past the end time, inform the user and do not
      start.
-3. **Set digest slots:**
-   - Default digest times are **12:00 PM** and **5:00 PM** local.
-   - These are stored in the loop state so the loop knows which have already
-     been completed today.
-4. **Check for stale state:** If `loop-state.json` exists with
+3. **Check for stale state:** If `loop-state.json` exists with
    `status: "active"` but `nextCycleAt` is in the past by more than
    90 minutes, treat it as an abandoned loop — reset and start fresh.
    Also inspect the active loop runner:
@@ -833,16 +829,16 @@ start an automated triage loop that runs every hour on the hour.
    - If `loop-state.json` is still active but no live runner exists, treat the
      state as recoverable and resume it immediately rather than waiting for the
      stale window to expire.
-5. **Resume support:** If `loop-state.json` exists with `status: "active"`
+4. **Resume support:** If `loop-state.json` exists with `status: "active"`
    and `nextCycleAt` is in the future (or recently passed), **resume** from
    that point rather than reinitializing. Print:
    `"🔄 Resuming siftr loop — last cycle was at {time}, next due at {time}"`
-6. **Write initial state** and print the schedule:
+5. **Write initial state** and print the schedule:
    ```
    🔁 Siftr loop started
       End time: 8:00 PM
       Triage: every hour on the hour
-      Digests: 12:00 PM, 5:00 PM
+      Digest: manual only (loop does not auto-run digests)
       Next cycle: {time}
    ```
 
@@ -868,8 +864,6 @@ start an automated triage loop that runs every hour on the hour.
       "host": "WORKSTATION",
       "scriptPath": "c:\\users\\me\\siftr\\scripts\\start-siftrfullloop.ps1"
     },
-    "digestSlots": ["2026-04-17T19:00:00Z", "2026-04-18T00:00:00Z"],
-    "digestsCompleted": ["2026-04-17T19:00:00Z"],
     "cycleCount": 7,
     "stoppedAt": null,
     "stopReason": null,
@@ -885,6 +879,16 @@ start an automated triage loop that runs every hour on the hour.
     "lastDiagnosticAt": "2026-04-17T16:02:00Z",
     "lastDiagnosticResult": "not-needed|verified-zero|verified-zero-watch|anomaly-recovered|outside-hours",
     "lastFallbackCount": 0,
+    "shadowComparison": {
+      "samples": 12,
+      "llmSuccesses": 12,
+      "heuristicFallbacks": 3,
+      "exactMatches": 10,
+      "tierDisagreements": 2,
+      "actionBoundaryDisagreements": 1,
+      "urgentBoundaryDisagreements": 0,
+      "lastUpdated": "2026-04-17T16:02:00Z"
+    },
     "stats": {
       "totalEmails": 45,
       "urgent": 2,
@@ -897,7 +901,7 @@ start an automated triage loop that runs every hour on the hour.
   }
   ```
 - **Write this file after every state change** (cycle start, cycle end,
-  digest complete, loop stop). Use BOM-free UTF-8.
+  loop stop). Use BOM-free UTF-8.
 - **Write atomically** (temp file + replace) so OneDrive sync or concurrent
   readers do not observe a half-written JSON file.
 - **Do not overload `last-scan.json`** — that remains the simple triage
@@ -906,6 +910,8 @@ start an automated triage loop that runs every hour on the hour.
   every save so a future launch can tell whether the loop is still truly alive.
 - Track **degraded mode and quarantine counts** so repeated LLM issues are
   visible in state instead of silently disappearing into the log.
+- Track **shadow comparison metrics** so the user can see how often the local
+  heuristic matches or meaningfully differs from successful LLM triage.
 
 ### 11c. Triage cycle
 
@@ -917,6 +923,13 @@ lighter output:
    - Capture `$fetchStartedUtc = [datetime]::UtcNow` immediately before the
      fetch and only persist that value back to `last-scan.json` after the cycle
      succeeds.
+   - **Recent-mail cap:** loop mode and one-off recovery only care about recent
+     mail. Cap the effective fetch window to the most recent **72 hours** even
+     if the bookmark or uncategorized Inbox backlog would otherwise pull in
+     older pre-Siftr mail.
+   - Historical uncategorized Inbox-root backlog is therefore **out of scope**
+     for the hourly loop. Leave it alone unless the user explicitly asks for a
+     separate cleanup workflow.
    - If the first fetch returns **0 or 1 items**, immediately repeat the same
      fetch once before concluding the Inbox window is drained. Outlook COM can
      occasionally under-enumerate a live Inbox collection.
@@ -924,9 +937,10 @@ lighter output:
      window**, run a bounded diagnostic against **today since 12:01 AM**:
      compare unread Inbox-root mail and uncategorized Inbox-root mail before
      trusting the zero.
-   - If that fallback diagnostic finds mail, emit a `scan_anomaly` event, log a
-     warning, and immediately rerun triage with the wider bounded window so the
-     loop can recover without waiting for the user to notice.
+   - If that fallback diagnostic finds recent mail, emit a `scan_anomaly`
+     event, log a warning, and immediately rerun triage with the wider bounded
+     recent window so the loop can recover without waiting for the user to
+     notice.
    - If the fallback diagnostic also finds nothing, record the verified zero in
      `loop-state.json`. After **2 consecutive verified zero-result work-hour
      cycles**, escalate to a stronger warning so a broken Outlook view or fetch
@@ -973,44 +987,25 @@ lighter output:
    - At the start of the next day's loop, switch to a fresh date-scoped review
      JSON so the active review cache resets for the new day.
 8. **Update loop state** — increment `cycleCount`, accumulate tier stats,
-   set `lastCycleCompletedAt`.
+   set `lastCycleCompletedAt`, and merge the cycle's shadow comparison metrics.
 9. **On any crash / unexpected exit:** write `status: "stopped"`,
    `stopReason`, `stoppedAt`, and `lastError` before the runner exits so the
    next launch is not stuck behind a fake `active` state.
 
-### 11d. Digest triggers
+### 11d. Digest behavior in loop mode
 
-After each triage cycle, check for pending digest slots:
+Loop mode does **not** auto-run digests.
 
-1. Compare `digestSlots` against `digestsCompleted` in the loop state.
-2. For any slot whose time has **passed** and is **not yet in
-   `digestsCompleted`**, run the digest:
-   a. **Shut down any existing digest server:**
-      ```powershell
-      try { Invoke-RestMethod -Uri http://localhost:8474/api/shutdown -Method POST | Out-Null } catch {}
-      ```
-   b. Run the full digest workflow (§9b–§9g).
-   c. Notify the user:
-      ```
-      📬 Noon digest ready at http://localhost:8474 — say "siftr process my digest" when ready
-      ```
-      or
-      ```
-      📬 5 PM digest ready at http://localhost:8474 — say "siftr process my digest" when ready
-      ```
-    d. Add the slot timestamp to `digestsCompleted` in the loop state.
-3. A digest failure must be **non-fatal** to the scheduler. Record the failure
-   in state and the event log, then continue toward the next cycle.
-
-This slot-tracking approach ensures:
-- A digest is never skipped (even if a cycle runs late).
-- A digest is never duplicated (completed slots are recorded).
-- Manual `siftr digest` commands don't conflict — they don't modify
-  `digestsCompleted`.
+1. The hourly scheduler is limited to triage, review-store maintenance, and
+   state persistence.
+2. Digest generation remains available only through the manual `siftr digest`
+   and `siftr digest all mails` commands in §9.
+3. Starting or resuming the loop must **not** shut down an already-running
+   digest server, because digest is now outside the loop's ownership boundary.
 
 ### 11e. Sleep between cycles
 
-After completing a cycle (and any triggered digest):
+After completing a cycle:
 
 1. **Calculate next cycle time** — the next hour boundary:
    ```
@@ -1047,8 +1042,6 @@ When the loop reaches or passes the end time:
    🔁 Siftr loop complete — {cycleCount} cycles, {totalEmails} emails triaged
 
       🔴 {urgent}  🟠 {action}  🟢⬆ {priorityInformed}  🟢 {informed}  ⚪ {lowPriority}
-
-      Digests delivered: {count}
    ```
 
 ### 11g. Stopping the loop
@@ -1067,9 +1060,8 @@ When the user says **"siftr stop"** or **"stop the loop"**:
   will naturally pick up only new messages since that scan — no
   double-processing.
 - If the user runs **`siftr digest`** manually, it does not affect
-  `digestsCompleted` in the loop state. The loop may still auto-trigger
-  its scheduled digest at the next slot. This is acceptable — the user
-  gets a fresh digest and the old digest server is shut down first.
+  the loop state. Manual digest runs are intentionally independent of the
+  hourly loop.
 - If the user runs **`siftr loop`** while a loop is already active,
   check `loop-state.json`: if status is `"active"` and `nextCycleAt` is
   in the future, inform the user a loop is already running and offer to
