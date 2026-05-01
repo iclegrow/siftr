@@ -1109,6 +1109,90 @@ function Trim-Text {
     $clean.Substring(0, $MaxLength).Trim() + '...'
 }
 
+function Get-MojibakeScore {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return 0 }
+
+    $score = 0
+    $suspiciousTokens = @(
+        [string][char]0x00C3,
+        [string][char]0x00C2,
+        [string][char]0x00E2,
+        [string][char]0x00F0,
+        [string][char]0x00D2,
+        [string][char]0x2426,
+        [string][char]0x2B20,
+        [string][char]0xFFFD
+    )
+    foreach ($token in $suspiciousTokens) {
+        $score += [regex]::Matches($Text, [regex]::Escape($token)).Count * 2
+    }
+
+    $zeroWidthSpace = [string][char]0x200B
+    $nonBreakingSpace = [string][char]0x00A0
+    $score += [regex]::Matches($Text, [regex]::Escape($zeroWidthSpace)).Count
+    $score += [regex]::Matches($Text, [regex]::Escape($nonBreakingSpace)).Count
+    $score
+}
+
+function Test-SuspiciousReviewText {
+    param([AllowNull()][string]$Text)
+
+    (Get-MojibakeScore -Text $Text) -gt 0
+}
+
+function Find-ReviewItemByInternetMessageId {
+    param(
+        [Parameter(Mandatory)][string]$InternetMessageId,
+        [AllowEmptyCollection()][array]$Folders = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InternetMessageId)) { return $null }
+    $escaped = $InternetMessageId.Replace("'", "''")
+    $filter = '@SQL="http://schemas.microsoft.com/mapi/proptag/0x1035001F" = ''' + $escaped + ''''
+
+    foreach ($folder in @($Folders)) {
+        if (-not $folder) { continue }
+        try {
+            $found = $folder.Items.Find($filter)
+            if ($found) { return $found }
+        }
+        catch {}
+    }
+
+    $null
+}
+
+function Restore-LoopReviewEntryFromOutlook {
+    param(
+        [Parameter(Mandatory)]$Email,
+        [AllowEmptyCollection()][array]$Folders = @()
+    )
+
+    $needsRestore = (Test-SuspiciousReviewText -Text ([string]$Email.subject)) -or
+        (Test-SuspiciousReviewText -Text ([string]$Email.to)) -or
+        (Test-SuspiciousReviewText -Text ([string]$Email.cc)) -or
+        ($Email.from -and (
+            (Test-SuspiciousReviewText -Text ([string]$Email.from.name)) -or
+            (Test-SuspiciousReviewText -Text ([string]$Email.from.address))
+        ))
+
+    if (-not $needsRestore) { return $Email }
+
+    $item = Find-ReviewItemByInternetMessageId -InternetMessageId ([string]$Email.internetMessageId) -Folders $Folders
+    if (-not $item) { return $Email }
+
+    $Email.subject = [string]$item.Subject
+    $Email.to = [string]$item.To
+    $Email.cc = [string]$item.CC
+    if ($Email.from) {
+        $Email.from.name = [string]$item.SenderName
+        $Email.from.address = Resolve-SmtpAddress -Item $item
+    }
+    $Email
+}
+
 function Resolve-SmtpAddress {
     param([Parameter(Mandatory)]$Item)
 
@@ -2618,9 +2702,19 @@ function Update-LoopReviewStore {
     Set-StateProperty -State $State -Name 'reviewDataPath' -Value $path
     $document = New-LoopReviewDocument -State $State -ExistingDocument (Read-JsonFile -Path $path)
     $existingById = @{}
+    $outlookFolders = @()
+    try {
+        $inbox = _Get-OutlookInbox
+        $outlookFolders = @($inbox)
+        foreach ($subfolder in $inbox.Folders) {
+            $outlookFolders += $subfolder
+        }
+    }
+    catch {}
 
     foreach ($email in @($document.emails)) {
         if ($null -eq $email -or [string]::IsNullOrWhiteSpace([string]$email.id)) { continue }
+        $email = Restore-LoopReviewEntryFromOutlook -Email $email -Folders $outlookFolders
         $existingById[[string]$email.id] = $email
     }
 

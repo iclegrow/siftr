@@ -30,6 +30,13 @@ This log is maintained by Copilot to preserve context across sessions.
   `Start-SiftrFullLoop.ps1 -RunOneCycleNow` accepts an override `Since` and
   message limit, which makes guarded drain runs like "all of today" possible
   without mutating the normal loop bookmark logic first.
+- **Review page columns now stay laptop-friendly**: the review table uses a
+  fixed layout with tighter column caps and ellipsis on long sender/subject
+  text so one malformed title can no longer blow the whole grid off screen.
+- **Review titles now recover from corrupted stored text**: the review UI fixes
+  obvious mojibake on load, and the review-store merge path now refreshes
+  suspicious subject/sender fields from Outlook by `InternetMessageId` instead
+  of guessing at a lossy text conversion.
 
 ---
 

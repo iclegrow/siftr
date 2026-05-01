@@ -288,11 +288,13 @@
     /* ─── TABLE ─── */
     .table-container {
       padding: 8px 28px 80px;
+      overflow-x: auto;
     }
 
     .email-table {
       width: 100%;
       border-collapse: collapse;
+      table-layout: fixed;
     }
 
     .email-table thead th {
@@ -331,16 +333,17 @@
       padding: 10px 10px;
       vertical-align: middle;
       font-size: 0.88rem;
+      overflow: hidden;
     }
 
     /* Column widths */
-    .col-tier { width: 160px; }
+    .col-tier { width: 140px; }
     .col-subject { width: auto; }
-    .col-from { width: 160px; }
-    .col-addressed { width: 50px; text-align: center; }
-    .col-confidence { width: 65px; text-align: center; }
-    .col-override { width: 180px; }
-    .col-notes { width: 200px; }
+    .col-from { width: 140px; }
+    .col-addressed { width: 56px; text-align: center; }
+    .col-confidence { width: 64px; text-align: center; }
+    .col-override { width: 160px; }
+    .col-notes { width: 180px; }
 
     /* ─── TIER BADGE ─── */
     .tier-badge {
@@ -392,10 +395,14 @@
 
     /* ─── SUBJECT ─── */
     .subject-text {
+      display: block;
       font-weight: 500;
       color: var(--text-primary);
       cursor: pointer;
       transition: color 0.15s;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .subject-text:hover { color: var(--accent); }
@@ -423,8 +430,12 @@
     tr.expanded .subject-reason { display: block; }
 
     .from-name {
+      display: block;
       color: var(--text-secondary);
       font-weight: 400;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     /* ─── OVERRIDE SELECT ─── */
@@ -439,6 +450,8 @@
       cursor: pointer;
       outline: none;
       width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       transition: all 0.15s;
       appearance: none;
       -webkit-appearance: none;
@@ -462,8 +475,18 @@
       border-radius: var(--radius-sm);
       color: var(--text-primary);
       width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       outline: none;
       transition: border-color 0.15s;
+    }
+
+    @media (max-width: 1440px) {
+      .table-container { padding: 8px 16px 72px; }
+      .col-tier { width: 128px; }
+      .col-from { width: 128px; }
+      .col-override { width: 148px; }
+      .col-notes { width: 160px; }
     }
 
     .notes-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
@@ -622,6 +645,63 @@
       return TIER_BY_KEY[normalizeTierKey(tier)] || TIERS[4]; // fallback to low
     }
 
+    const MOJIBAKE_PATTERN = /(?:Ã.|Â.|â€|â€™|â€œ|â€\u009d|â€“|â€”|â€¢|ðŸ|�|Ò.|␦|⬠)/;
+
+    function getMojibakeScore(text) {
+      if (!text) return 0;
+      const matches = text.match(/(?:Ã.|Â.|â€|â€™|â€œ|â€\u009d|â€“|â€”|â€¢|ðŸ|�|Ò.|␦|⬠)/g) || [];
+      const stray = text.match(/[ÃÂâðÒ�␦⬠]/g) || [];
+      return (matches.length * 2) + stray.length;
+    }
+
+    function decodeLatin1Utf8(text) {
+      const bytes = Uint8Array.from(Array.from(text, ch => ch.charCodeAt(0) & 0xFF));
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+
+    function repairMojibakeText(text) {
+      if (typeof text !== 'string' || text.length === 0 || !MOJIBAKE_PATTERN.test(text)) {
+        return text || '';
+      }
+
+      let best = text;
+      let bestScore = getMojibakeScore(best);
+
+      for (let i = 0; i < 3; i += 1) {
+        let candidate = best;
+        try {
+          candidate = decodeLatin1Utf8(best);
+        } catch {
+          break;
+        }
+
+        if (!candidate.trim()) break;
+        const candidateScore = getMojibakeScore(candidate);
+        if (candidateScore >= bestScore) break;
+
+        best = candidate;
+        bestScore = candidateScore;
+      }
+
+      return best;
+    }
+
+    function normalizeEmailForDisplay(email) {
+      return {
+        ...email,
+        subject: repairMojibakeText(email.subject || ''),
+        to: repairMojibakeText(email.to || ''),
+        cc: repairMojibakeText(email.cc || ''),
+        reason: repairMojibakeText(email.reason || ''),
+        uncertainty: repairMojibakeText(email.uncertainty || ''),
+        from: email.from ? {
+          ...email.from,
+          name: repairMojibakeText(email.from.name || ''),
+          address: repairMojibakeText(email.from.address || '')
+        } : email.from
+      };
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  APP STATE
     // ═══════════════════════════════════════════════════════════════════
@@ -644,6 +724,7 @@
         try {
           const res = await fetch('/api/data');
           this.data = await res.json();
+          this.data.emails = (this.data.emails || []).map(normalizeEmailForDisplay);
 
           // Pre-populate changes from existing overrides/notes
           this.data.emails.forEach(email => {
@@ -800,6 +881,7 @@
           const subjectSpan = document.createElement('span');
           subjectSpan.className = 'subject-text';
           subjectSpan.textContent = email.subject || '(no subject)';
+          subjectSpan.title = email.subject || '(no subject)';
           subjectSpan.addEventListener('click', () => {
             if (this.expandedRows.has(email.id)) {
               this.expandedRows.delete(email.id);
@@ -832,6 +914,7 @@
           const fromTd = document.createElement('td');
           fromTd.className = 'col-from';
           fromTd.innerHTML = `<span class="from-name">${this.escapeHtml(email.from?.name || email.from?.address || '—')}</span>`;
+          fromTd.title = email.from?.name || email.from?.address || '—';
 
           // Addressed
           const addrTd = document.createElement('td');
