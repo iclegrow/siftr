@@ -1,6 +1,7 @@
 param(
     [switch]$ValidateOnly,
     [switch]$RunOneCycleNow,
+    [switch]$Continuous,
     [datetime]$SinceOverride,
     [int]$MessageLimitOverride = 0,
     [string]$SiftrRoot = '<local-path>',
@@ -363,13 +364,34 @@ function Test-LoopOwnedByCurrentRunner {
     ($ownerRunnerId -eq $LoopRunnerId -and $ownerPid -eq $PID)
 }
 
+function Test-ContinuousMode {
+    param($State)
+
+    ([string]$State.mode).ToLowerInvariant() -eq 'continuous'
+}
+
+function Test-LoopHasEndTime {
+    param($State)
+
+    (-not (Test-ContinuousMode -State $State) -and -not [string]::IsNullOrWhiteSpace([string]$State.endTime))
+}
+
+function Get-LoopEndTimeUtc {
+    param($State)
+
+    if (-not (Test-LoopHasEndTime -State $State)) { return $null }
+    Get-UtcDateTime -Timestamp $State.endTime
+}
+
 function Ensure-ResilienceStateFields {
     param([Parameter(Mandatory)]$State)
 
     foreach ($pair in @(
+        @{ Name = 'mode'; Value = 'daily' },
         @{ Name = 'leaseExpiresAt'; Value = $null },
         @{ Name = 'consecutiveFailures'; Value = 0 },
         @{ Name = 'lastSuccessfulCycleAt'; Value = $null },
+        @{ Name = 'lastSuccessfulFetchStartedAt'; Value = $null },
         @{ Name = 'lastFailureAt'; Value = $null },
         @{ Name = 'lastFailurePhase'; Value = $null },
         @{ Name = 'retryAttemptCount'; Value = 0 },
@@ -391,6 +413,10 @@ function Ensure-ResilienceStateFields {
 
 function Get-LoopReviewDateKey {
     param($State)
+
+    if ($State -and (Test-ContinuousMode -State $State)) {
+        return (Get-Date).ToString('yyyy-MM-dd')
+    }
 
     if ($State -and $State.reviewDateLocal) {
         return [string]$State.reviewDateLocal
@@ -657,7 +683,18 @@ function Get-LoopRecentCutoffLocal {
 }
 
 function Get-EffectiveLoopSince {
-    param([Parameter(Mandatory)][datetime]$Candidate)
+    param(
+        [Parameter(Mandatory)][datetime]$Candidate,
+        $State
+    )
+
+    if ($State -and (Test-ContinuousMode -State $State)) {
+        if ($Candidate.Kind -eq [System.DateTimeKind]::Utc) {
+            return $Candidate.ToLocalTime()
+        }
+
+        return $Candidate
+    }
 
     $recentCutoffLocal = Get-LoopRecentCutoffLocal
     if ($Candidate.Kind -eq [System.DateTimeKind]::Utc) {
@@ -710,6 +747,29 @@ function Set-NextCycleAt {
 
     Set-StateProperty -State $State -Name 'nextCycleAt' -Value $NextLocal.ToUniversalTime().ToString('o')
     Save-LoopState -State $State -HeartbeatReason $HeartbeatReason
+}
+
+function Get-PostCycleSchedule {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][datetime]$AfterCycle,
+        [Parameter(Mandatory)][int]$MessageCount,
+        [Parameter(Mandatory)][int]$MessageLimit
+    )
+
+    if ((Test-ContinuousMode -State $State) -and $MessageLimit -gt 0 -and $MessageCount -ge $MessageLimit) {
+        return [pscustomobject]@{
+            NextLocal = $AfterCycle.AddMinutes(5)
+            HeartbeatReason = 'catch-up-scheduled'
+            Mode = 'catch-up'
+        }
+    }
+
+    return [pscustomobject]@{
+        NextLocal = (Get-NextCycleBoundaryLocal -After $AfterCycle)
+        HeartbeatReason = 'scheduled'
+        Mode = 'hourly'
+    }
 }
 
 function Get-TriageInboxMessages {
@@ -1057,7 +1117,7 @@ function Schedule-CycleFailure {
 
     Ensure-ResilienceStateFields -State $State
 
-    $endTimeUtc = Get-UtcDateTime -Timestamp $State.endTime
+    $endTimeUtc = Get-LoopEndTimeUtc -State $State
     $nextHourlyLocal = $null
     if ($State.retryFallbackCycleAt) {
         try { $nextHourlyLocal = (Get-UtcDateTime -Timestamp $State.retryFallbackCycleAt).ToLocalTime() } catch {}
@@ -1070,7 +1130,7 @@ function Schedule-CycleFailure {
     if ([int]$State.retryAttemptCount -lt 1) {
         $candidateRetryLocal = $CycleLocal.AddMinutes(15)
         if ($candidateRetryLocal.ToUniversalTime() -lt $nextHourlyLocal.ToUniversalTime() -and
-            $candidateRetryLocal.ToUniversalTime() -le $endTimeUtc) {
+            (($null -eq $endTimeUtc) -or $candidateRetryLocal.ToUniversalTime() -le $endTimeUtc)) {
             $retryLocal = $candidateRetryLocal
             Set-StateProperty -State $State -Name 'retryAttemptCount' -Value 1
             Set-StateProperty -State $State -Name 'retryFallbackCycleAt' -Value $nextHourlyLocal.ToUniversalTime().ToString('o')
@@ -1085,7 +1145,7 @@ function Schedule-CycleFailure {
 
     if (-not $retryLocal) {
         Clear-CycleRetryState -State $State
-        if ($nextHourlyLocal.ToUniversalTime() -gt $endTimeUtc) {
+        if ($endTimeUtc -and $nextHourlyLocal.ToUniversalTime() -gt $endTimeUtc) {
             Emit-CycleFailureStatus -CycleLocal $CycleLocal -ErrorText $ErrorText
             Finalize-Loop -State $State
             return
@@ -2583,6 +2643,8 @@ function Save-LoopState {
         [Parameter(Mandatory)]$State,
         [string]$HeartbeatReason = 'active'
     )
+    Ensure-ResilienceStateFields -State $State
+    Ensure-LoopReviewStateFields -State $State
     Stamp-LoopState -State $State -HeartbeatReason $HeartbeatReason
     Write-Utf8Json -Path $LoopStatePath -Object $State
 }
@@ -2590,21 +2652,26 @@ function Save-LoopState {
 function New-LoopState {
     param(
         $ExistingState,
-        [switch]$AllowAfterHours
+        [switch]$AllowAfterHours,
+        [switch]$Continuous
     )
 
     $now = Get-Date
-    $endLocal = Get-DefaultEndTimeLocal
-    if ($now -ge $endLocal) {
-        if (-not $AllowAfterHours) {
-            $null = Write-LoopLog 'Siftr loop not started: the 8:00 PM end time has already passed.'
-            return $null
-        }
+    $endLocal = $null
+    $mode = if ($Continuous) { 'continuous' } else { 'daily' }
+    if (-not $Continuous) {
+        $endLocal = Get-DefaultEndTimeLocal
+        if ($now -ge $endLocal) {
+            if (-not $AllowAfterHours) {
+                $null = Write-LoopLog 'Siftr loop not started: the 8:00 PM end time has already passed.'
+                return $null
+            }
 
-        # Allow an explicit one-off recovery run after hours without reopening
-        # the full hourly loop window.
-        $endLocal = $now.AddMinutes(5)
-        $null = Write-LoopLog '[manual] Starting one-off siftr recovery cycle after the normal 8:00 PM end time.'
+            # Allow an explicit one-off recovery run after hours without reopening
+            # the full hourly loop window.
+            $endLocal = $now.AddMinutes(5)
+            $null = Write-LoopLog '[manual] Starting one-off siftr recovery cycle after the normal 8:00 PM end time.'
+        }
     }
 
     $todaySlots = @(Get-TodayDigestSlotsUtc)
@@ -2617,8 +2684,9 @@ function New-LoopState {
 
     [ordered]@{
         status = 'active'
+        mode = $mode
         startedAt = ([datetime]::UtcNow).ToString('o')
-        endTime = $endLocal.ToUniversalTime().ToString('o')
+        endTime = if ($endLocal) { $endLocal.ToUniversalTime().ToString('o') } else { $null }
         nextCycleAt = ([datetime]::UtcNow).ToString('o')
         lastCycleCompletedAt = $null
         lastCycleStartedAt = $null
@@ -2634,6 +2702,7 @@ function New-LoopState {
         lastError = $null
         consecutiveFailures = 0
         lastSuccessfulCycleAt = $null
+        lastSuccessfulFetchStartedAt = $null
         lastFailureAt = $null
         lastFailurePhase = $null
         retryAttemptCount = 0
@@ -2832,9 +2901,12 @@ function Ensure-ReviewServerRunning {
     Ensure-LoopReviewStateFields -State $State
     $reviewPath = Resolve-SinglePathValue -Value $State.reviewDataPath -FieldName 'review JSON path'
     Set-StateProperty -State $State -Name 'reviewDataPath' -Value $reviewPath
+    if (-not (Test-Path -LiteralPath $reviewPath)) {
+        Write-Utf8Json -Path $reviewPath -Object (New-LoopReviewDocument -State $State)
+    }
     try {
         $response = Invoke-RestMethod -Uri 'http://localhost:8473/api/data' -Method GET -ErrorAction Stop
-        if ($response -and $response.emails -ne $null) { return }
+        if ($response -and $response.emails -ne $null -and [string]$response.reviewDateLocal -eq [string]$State.reviewDateLocal) { return }
     }
     catch {}
 
@@ -2975,7 +3047,7 @@ function Run-Cycle {
             try { $bookmarkSince = [datetime]$scan.lastScanCompleted } catch {}
         }
     }
-    $since = Get-EffectiveLoopSince -Candidate $bookmarkSince
+    $since = Get-EffectiveLoopSince -Candidate $bookmarkSince -State $State
  
     $cycleLocal = Get-Date
     $messageLimit = if ($MessageLimitOverride -gt 0) {
@@ -3088,6 +3160,7 @@ function Run-Cycle {
     Update-LoopReviewStore -State $State -Entries @($reviewEntries)
     Ensure-ReviewServerRunning -State $State
     Write-Utf8Json -Path $LastScanPath -Object @{ lastScanCompleted = $fetchStartedUtc.ToString('o') }
+    Set-StateProperty -State $State -Name 'lastSuccessfulFetchStartedAt' -Value $fetchStartedUtc.ToString('o')
     Emit-CycleSummary -CycleLocal $cycleLocal -Classifications @($classifications) -Diagnostic $diagnostic -ComparisonMetrics $comparisonMetrics
     Update-Stats -State $State -Classifications @($classifications) -ComparisonMetrics $comparisonMetrics
     Clear-CycleRetryState -State $State
@@ -3103,6 +3176,10 @@ function Run-Cycle {
         heuristicFallbacks = [int]$comparisonMetrics.heuristicFallbacks
     }
     Save-LoopState -State $State -HeartbeatReason 'cycle-complete'
+    [pscustomobject]@{
+        messageCount = [int]$messages.Count
+        messageLimit = [int]$messageLimit
+    }
 }
 
 function Run-PendingDigests {
@@ -3149,7 +3226,7 @@ try {
     $resume = $false
     $otherLoopProcesses = @(Get-OtherLoopProcesses)
 
-    if ($existing -and [string]$existing.status -eq 'active' -and $existing.nextCycleAt -and $existing.endTime) {
+    if ($existing -and [string]$existing.status -eq 'active' -and $existing.nextCycleAt -and ((Test-ContinuousMode -State $existing) -or $existing.endTime)) {
         if ($otherLoopProcesses.Count -gt 0) {
             $otherPids = @($otherLoopProcesses | Select-Object -ExpandProperty ProcessId -Unique)
             Write-LoopLog ("[warn] Another siftr loop runner is already active (PID {0}). Leaving the existing loop state unchanged." -f ($otherPids -join ', '))
@@ -3157,8 +3234,8 @@ try {
         }
 
         $nextUtc = Get-UtcDateTime -Timestamp $existing.nextCycleAt
-        $endUtc = Get-UtcDateTime -Timestamp $existing.endTime
-        if ($endUtc -gt [datetime]::UtcNow -and $nextUtc -gt [datetime]::UtcNow.AddMinutes(-90)) {
+        $endUtc = Get-LoopEndTimeUtc -State $existing
+        if ((Test-ContinuousMode -State $existing) -or ($endUtc -gt [datetime]::UtcNow -and $nextUtc -gt [datetime]::UtcNow.AddMinutes(-90))) {
             $state = $existing
             $resume = $true
             if (-not $existing.owner -or -not $existing.heartbeatAt) {
@@ -3171,7 +3248,7 @@ try {
     }
 
     if (-not $state) {
-        $state = New-LoopState -ExistingState $existing -AllowAfterHours:$RunOneCycleNow
+        $state = New-LoopState -ExistingState $existing -AllowAfterHours:$RunOneCycleNow -Continuous:$Continuous
     }
 
     if (-not $state) { return }
@@ -3189,8 +3266,9 @@ try {
         if ([string]$state.status -ne 'active') { return }
         $cycleSucceeded = $false
         $cycleFailureLocal = $null
+        $cycleResult = $null
         try {
-            Run-Cycle -State $state -User $user -Config $config -Org $org
+            $cycleResult = Run-Cycle -State $state -User $user -Config $config -Org $org
             $cycleSucceeded = $true
         }
         catch {
@@ -3201,12 +3279,12 @@ try {
         }
         $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
         if ($cycleSucceeded) {
-            $nextBoundaryLocal = Get-NextCycleBoundaryLocal -After (Get-Date)
-            if ($nextBoundaryLocal.ToUniversalTime() -gt (Get-UtcDateTime -Timestamp $state.endTime)) {
+            $schedule = Get-PostCycleSchedule -State $state -AfterCycle (Get-Date) -MessageCount ([int]$cycleResult.messageCount) -MessageLimit ([int]$cycleResult.messageLimit)
+            if ((Test-LoopHasEndTime -State $state) -and $schedule.NextLocal.ToUniversalTime() -gt (Get-LoopEndTimeUtc -State $state)) {
                 Finalize-Loop -State $state
             }
             else {
-                Set-NextCycleAt -State $state -NextLocal $nextBoundaryLocal -HeartbeatReason 'scheduled'
+                Set-NextCycleAt -State $state -NextLocal $schedule.NextLocal -HeartbeatReason $schedule.HeartbeatReason
             }
         }
         return
@@ -3218,8 +3296,14 @@ try {
     }
     else {
         $nextBoundary = Get-NextCycleBoundaryLocal -After (Get-Date)
-        Write-LoopLog '[start] Siftr full LLM-driven loop started'
-        Write-LoopLog ("   End time: {0}" -f (Get-UtcDateTime -Timestamp $state.endTime).ToLocalTime().ToString('h:mm tt'))
+        if (Test-ContinuousMode -State $state) {
+            Write-LoopLog '[start] Siftr continuous LLM-driven loop started'
+            Write-LoopLog '   Mode: continuous (runs until stopped)'
+        }
+        else {
+            Write-LoopLog '[start] Siftr full LLM-driven loop started'
+            Write-LoopLog ("   End time: {0}" -f (Get-UtcDateTime -Timestamp $state.endTime).ToLocalTime().ToString('h:mm tt'))
+        }
         Write-LoopLog '   Triage: starting now, then every hour on the hour'
         Write-LoopLog '   Digest: manual only (loop no longer auto-runs digests)'
         Write-LoopLog ("   Next cycle: {0}" -f $nextBoundary.ToString('h:mm tt'))
@@ -3234,8 +3318,8 @@ try {
             break
         }
 
-        $endTimeUtc = Get-UtcDateTime -Timestamp $state.endTime
-        if ([datetime]::UtcNow -ge $endTimeUtc) {
+        $endTimeUtc = Get-LoopEndTimeUtc -State $state
+        if ($endTimeUtc -and [datetime]::UtcNow -ge $endTimeUtc) {
             Finalize-Loop -State $state
             break
         }
@@ -3244,8 +3328,9 @@ try {
         if ([datetime]::UtcNow -ge $nextCycleUtc) {
             $cycleSucceeded = $false
             $cycleFailureLocal = $null
+            $cycleResult = $null
             try {
-                Run-Cycle -State $state -User $user -Config $config -Org $org
+                $cycleResult = Run-Cycle -State $state -User $user -Config $config -Org $org
                 $cycleSucceeded = $true
             }
             catch {
@@ -3258,13 +3343,14 @@ try {
 
             if ($cycleSucceeded) {
                 $afterCycle = Get-Date
-                $nextBoundaryLocal = Get-NextCycleBoundaryLocal -After $afterCycle
-                if ($nextBoundaryLocal.ToUniversalTime() -gt $endTimeUtc) {
+                $schedule = Get-PostCycleSchedule -State $state -AfterCycle $afterCycle -MessageCount ([int]$cycleResult.messageCount) -MessageLimit ([int]$cycleResult.messageLimit)
+                $nextBoundaryLocal = $schedule.NextLocal
+                if ($endTimeUtc -and $nextBoundaryLocal.ToUniversalTime() -gt $endTimeUtc) {
                     Finalize-Loop -State $state
                     break
                 }
 
-                Set-NextCycleAt -State $state -NextLocal $nextBoundaryLocal -HeartbeatReason 'scheduled'
+                Set-NextCycleAt -State $state -NextLocal $nextBoundaryLocal -HeartbeatReason $schedule.HeartbeatReason
 
                 if ($state.lastCycleCompletedAt -and $state.nextCycleAt) {
                     try {
@@ -3272,7 +3358,7 @@ try {
                         $nextCycleUtc = Get-UtcDateTime -Timestamp $state.nextCycleAt
                         if ($nextCycleUtc -le $lastCycleUtc) {
                             $repairBoundaryLocal = Get-NextCycleBoundaryLocal -After $lastCycleUtc.ToLocalTime()
-                            if ($repairBoundaryLocal.ToUniversalTime() -le (Get-UtcDateTime -Timestamp $state.endTime)) {
+                            if ((-not $endTimeUtc) -or $repairBoundaryLocal.ToUniversalTime() -le $endTimeUtc) {
                                 Set-NextCycleAt -State $state -NextLocal $repairBoundaryLocal -HeartbeatReason 'schedule-repair'
                             }
                         }
@@ -3281,7 +3367,12 @@ try {
                 }
 
                 $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($nextBoundaryLocal - (Get-Date)).TotalMinutes))
-                Write-LoopLog ("[sleep] Next cycle: {0} ({1} min)" -f $nextBoundaryLocal.ToString('h:mm tt'), $sleepMinutes)
+                if ($schedule.Mode -eq 'catch-up') {
+                    Write-LoopLog ("[catch-up] Backlog likely remains; next cycle: {0} ({1} min)" -f $nextBoundaryLocal.ToString('h:mm tt'), $sleepMinutes)
+                }
+                else {
+                    Write-LoopLog ("[sleep] Next cycle: {0} ({1} min)" -f $nextBoundaryLocal.ToString('h:mm tt'), $sleepMinutes)
+                }
             }
             else {
                 $scheduledNextLocal = (Get-UtcDateTime -Timestamp $state.nextCycleAt).ToLocalTime()

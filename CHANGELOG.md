@@ -5,6 +5,27 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-05-10 — Continuous loop mode and multi-day recovery
+
+- **Loop mode now supports a continuous scheduler**: `Start-SiftrFullLoop.ps1`
+  accepts a continuous mode that runs hourly until explicitly stopped instead
+  of always stopping at the 8:00 PM daily boundary.
+- **Continuous-mode recovery now trusts the last known good pass**: bookmark
+  recovery no longer truncates to the normal 72-hour loop cap, so a rebooted or
+  hibernated cloud PC can resume from `last-scan.json` even after longer
+  downtime.
+- **Backlog catch-up is faster after downtime**: when a continuous-mode cycle
+  fills the message cap, the loop schedules a short follow-up catch-up cycle a
+  few minutes later instead of waiting until the next hour.
+- **Review-store rollover is now day-safe for long-running loops**: the active
+  review JSON and review server automatically switch to the new local date so a
+  continuous run that spans days does not accumulate all feedback in one file.
+- **Loop state now records continuous-mode recovery metadata**:
+  `loop-state.json` persists loop mode plus the last successful fetch-start
+  bookmark, which makes restart/reclaim behavior clearer after long downtime.
+
+---
+
 ## 2026-04-30 — Loop mode now skips auto-digests and records classifier drift
 
 - **Digest stays manual while loop mode focuses on triage**: `siftr loop` no

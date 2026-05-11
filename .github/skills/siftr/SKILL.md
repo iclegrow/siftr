@@ -614,6 +614,7 @@ overrode a classification and can inform rule changes.
 | `siftr status` | Show org cache age and learning file count |
 | `siftr dry-run` | Triage + classify but use `-WhatIf` for inbox actions |
 | `siftr loop` | Start hourly triage loop until 8pm (see §11) |
+| `siftr loop continuous` | Start hourly triage loop in continuous mode until stopped |
 | `siftr loop until {time}` | Start loop with custom end time |
 | `siftr stop` | Stop the running loop gracefully |
 
@@ -807,8 +808,9 @@ When the user says **"siftr process my digest"**:
 
 ## 11. Loop Mode — Hourly Automated Triage
 
-When the user says **"siftr loop"**, **"siftr loop until 8pm"**, or similar,
-start an automated triage loop that runs every hour on the hour.
+When the user says **"siftr loop"**, **"siftr loop until 8pm"**,
+**"siftr loop continuous"**, or similar, start an automated triage loop that
+runs every hour on the hour.
 
 ### 11a. Initialize the loop
 
@@ -818,6 +820,8 @@ start an automated triage loop that runs every hour on the hour.
    - Default: **8:00 PM local today**. The last triage cycle runs at or just
      after 8pm; no new cycles start after that.
    - The user may specify a custom end time (e.g., "siftr loop until 5pm").
+   - **Continuous mode:** when the user explicitly asks for continuous mode,
+     the loop has **no daily end time** and continues hourly until stopped.
    - If current time is already past the end time, inform the user and do not
      start.
 3. **Check for stale state:** If `loop-state.json` exists with
@@ -833,14 +837,20 @@ start an automated triage loop that runs every hour on the hour.
    and `nextCycleAt` is in the future (or recently passed), **resume** from
    that point rather than reinitializing. Print:
    `"🔄 Resuming siftr loop — last cycle was at {time}, next due at {time}"`
+   - In **continuous mode**, if the previous runner disappeared (reboot,
+     hibernate, or crash) and no live runner exists, reclaim the loop cleanly
+     and continue from the last known good bookmark rather than waiting for the
+     normal stale-state window.
 5. **Write initial state** and print the schedule:
    ```
    🔁 Siftr loop started
-      End time: 8:00 PM
+      End time: 8:00 PM   # daily mode
       Triage: every hour on the hour
       Digest: manual only (loop does not auto-run digests)
       Next cycle: {time}
    ```
+   - In **continuous mode**, print that the loop runs hourly **until stopped**
+     instead of showing a daily end time.
 
 ### 11b. Loop state file
 
@@ -927,6 +937,10 @@ lighter output:
      mail. Cap the effective fetch window to the most recent **72 hours** even
      if the bookmark or uncategorized Inbox backlog would otherwise pull in
      older pre-Siftr mail.
+   - **Continuous-mode recovery:** if the loop is running in continuous mode,
+     downtime recovery should honor the **last known good pass** even when that
+     is older than 72 hours. The bookmark remains the recovery floor; do not
+     truncate catch-up to the normal recent-mail cap.
    - Historical uncategorized Inbox-root backlog is therefore **out of scope**
      for the hourly loop. Leave it alone unless the user explicitly asks for a
      separate cleanup workflow.
@@ -945,6 +959,9 @@ lighter output:
      `loop-state.json`. After **2 consecutive verified zero-result work-hour
      cycles**, escalate to a stronger warning so a broken Outlook view or fetch
      path is visible in the logs.
+   - If a continuous-mode recovery cycle hits the message cap, assume backlog
+     likely remains and schedule a short **catch-up cycle** within a few
+     minutes instead of waiting until the next hour boundary.
 3. **Classify** (§3) — full Phase 1 + Phase 2 classification.
    - **Do not use subject-only shortcuts for reply threads.** If a message is a
      reply/forward, the user is on **To**, or the subject looks informational
@@ -986,6 +1003,9 @@ lighter output:
      row so the user can correct it independently.
    - At the start of the next day's loop, switch to a fresh date-scoped review
      JSON so the active review cache resets for the new day.
+   - In **continuous mode**, midnight rollover must switch the review cache to
+     the new local date automatically so multi-day runs do not accumulate all
+     feedback into one giant review file.
 8. **Update loop state** — increment `cycleCount`, accumulate tier stats,
    set `lastCycleCompletedAt`, and merge the cycle's shadow comparison metrics.
 9. **On any crash / unexpected exit:** write `status: "stopped"`,
@@ -1016,6 +1036,8 @@ After completing a cycle:
    the following hour.
 2. **Check end time** — if `nextCycleAt` would be after `endTime`, proceed
    to §11f (end of day) instead.
+   - In **continuous mode**, skip the end-time check and keep scheduling the
+     next hourly (or catch-up) cycle until the user stops the loop.
 3. **Persist `nextCycleAt`** to `loop-state.json`.
 4. **Print sleep message:**
    ```
@@ -1032,7 +1054,7 @@ After completing a cycle:
    to confirm `status` is still `"active"`. If it has been set to
    `"stopped"`, do not run another cycle.
 
-### 11f. End of day
+### 11f. End of day / daily completion
 
 When the loop reaches or passes the end time:
 
@@ -1052,6 +1074,7 @@ When the user says **"siftr stop"** or **"stop the loop"**:
 2. If there is a running async sleep, stop it.
 3. Print the end-of-day summary (same as §11f).
 4. The user can restart with `siftr loop` at any time.
+   In **continuous mode**, this is the normal and only planned shutdown path.
 
 ### 11h. Coordination with manual commands
 
