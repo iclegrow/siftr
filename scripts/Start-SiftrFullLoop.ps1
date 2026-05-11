@@ -1193,6 +1193,20 @@ function Restore-LoopReviewEntryFromOutlook {
     $Email
 }
 
+function Test-TrustedExternalContentSender {
+    param([Parameter(Mandatory)]$Record)
+
+    $senderName = ([string]$Record.From.Name).Trim().ToLowerInvariant()
+    $senderSmtp = ([string]$Record.SenderSmtp).Trim().ToLowerInvariant()
+    $senderAddress = ([string]$Record.From.Address).Trim().ToLowerInvariant()
+
+    if ($senderName -eq 'shantanu moghe' -and (($senderSmtp -like '*@capgemini.com') -or ($senderAddress -like '*@capgemini.com'))) {
+        return $true
+    }
+
+    $false
+}
+
 function Resolve-SmtpAddress {
     param([Parameter(Mandatory)]$Item)
 
@@ -1809,9 +1823,38 @@ function Get-CopilotEventObjects {
     @($events)
 }
 
+function Get-CopilotAssistantContentFromRaw {
+    param([AllowEmptyString()][string]$RawOutput)
+
+    $match = [regex]::Match([string]$RawOutput, '"type":"assistant\.message".*?"content":"(?<content>(?:\\.|[^"\\])*)"', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $match.Success) { return $null }
+
+    try {
+        return ('"' + $match.Groups['content'].Value + '"' | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        $null
+    }
+}
+
+function Get-CopilotResultExitCodeFromRaw {
+    param([AllowEmptyString()][string]$RawOutput)
+
+    $match = [regex]::Match([string]$RawOutput, '"type":"result".*?"exitCode":(?<code>-?\d+)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $match.Success) { return $null }
+
+    try {
+        return [int]$match.Groups['code'].Value
+    }
+    catch {
+        $null
+    }
+}
+
 function Get-CopilotReportedExitCode {
     param(
         [AllowEmptyCollection()][array]$Events = @(),
+        [AllowEmptyString()][string]$RawOutput = '',
         [AllowNull()]$ProcessExitCode
     )
 
@@ -1822,6 +1865,9 @@ function Get-CopilotReportedExitCode {
         if ([string]::IsNullOrWhiteSpace($exitCodeText)) { continue }
         try { return [int]$exitCodeText } catch {}
     }
+
+    $rawExitCode = Get-CopilotResultExitCodeFromRaw -RawOutput $RawOutput
+    if ($null -ne $rawExitCode) { return $rawExitCode }
 
     if ($null -eq $ProcessExitCode) { return $null }
     $processExitCodeText = [string]$ProcessExitCode
@@ -1877,24 +1923,39 @@ function Set-DecisionDiagnostics {
 function Invoke-CopilotRaw {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
+        [AllowEmptyString()][string]$StandardInputText,
         [int]$TimeoutSeconds = 180,
         $State,
         [string]$HeartbeatReason = 'classifying'
     )
 
+    $stdinPath = $null
     $stdoutPath = Join-Path $env:TEMP ("siftr-copilot-{0}-{1}.stdout" -f $PID, ([guid]::NewGuid().ToString('N')))
     $stderrPath = Join-Path $env:TEMP ("siftr-copilot-{0}-{1}.stderr" -f $PID, ([guid]::NewGuid().ToString('N')))
 
     try {
+        if ($PSBoundParameters.ContainsKey('StandardInputText')) {
+            $stdinPath = Join-Path $env:TEMP ("siftr-copilot-{0}-{1}.stdin" -f $PID, ([guid]::NewGuid().ToString('N')))
+            [System.IO.File]::WriteAllText($stdinPath, [string]$StandardInputText, $Utf8NoBom)
+        }
+
         $argumentLine = ConvertTo-NativeArgumentString -Arguments $Arguments
-        $process = Start-Process -FilePath $CopilotExe `
-            -ArgumentList $argumentLine `
-            -WorkingDirectory $SiftrRoot `
-            -NoNewWindow `
-            -PassThru `
-            -Wait:$false `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
+        $startParams = @{
+            FilePath = $CopilotExe
+            ArgumentList = $argumentLine
+            WorkingDirectory = $SiftrRoot
+            NoNewWindow = $true
+            PassThru = $true
+            Wait = $false
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+        }
+        if ($stdinPath) {
+            $startParams.RedirectStandardInput = $stdinPath
+        }
+
+        $process = Start-Process @startParams `
+            
 
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while (-not $process.HasExited) {
@@ -1916,7 +1977,8 @@ function Invoke-CopilotRaw {
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
         $combined = (($stdout + [Environment]::NewLine + $stderr).Trim())
         $events = @(Get-CopilotEventObjects -RawOutput $combined)
-        $effectiveExitCode = Get-CopilotReportedExitCode -Events $events -ProcessExitCode $process.ExitCode
+        $assistantContent = Get-CopilotAssistantContentFromRaw -RawOutput $combined
+        $effectiveExitCode = Get-CopilotReportedExitCode -Events $events -RawOutput $combined -ProcessExitCode $process.ExitCode
 
         if ($null -ne $effectiveExitCode -and $effectiveExitCode -ne 0) {
             if ([string]::IsNullOrWhiteSpace($combined)) {
@@ -1926,7 +1988,7 @@ function Invoke-CopilotRaw {
             throw "Copilot exited with code ${effectiveExitCode}: $combined"
         }
 
-        if ($null -eq $effectiveExitCode -and -not (Test-CopilotHasAssistantMessage -Events $events)) {
+        if ($null -eq $effectiveExitCode -and -not (Test-CopilotHasAssistantMessage -Events $events) -and [string]::IsNullOrWhiteSpace($assistantContent)) {
             if ([string]::IsNullOrWhiteSpace($combined)) {
                 throw 'Copilot exited without a usable result.'
             }
@@ -1937,7 +1999,7 @@ function Invoke-CopilotRaw {
         $combined
     }
     finally {
-        foreach ($path in @($stdoutPath, $stderrPath)) {
+        foreach ($path in @($stdinPath, $stdoutPath, $stderrPath)) {
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
             }
@@ -1968,11 +2030,10 @@ function Invoke-CopilotJson {
                 '--stream', 'off',
                 '--allow-all-tools',
                 '--no-ask-user',
-                '--log-level', 'error',
-                '--prompt', $Prompt
+                '--log-level', 'error'
             )
 
-            $raw = Invoke-CopilotRaw -Arguments $args -TimeoutSeconds $TimeoutSeconds -State $State -HeartbeatReason $HeartbeatReason
+            $raw = Invoke-CopilotRaw -Arguments $args -StandardInputText $Prompt -TimeoutSeconds $TimeoutSeconds -State $State -HeartbeatReason $HeartbeatReason
             $assistantContent = $null
             $events = @(Get-CopilotEventObjects -RawOutput $raw)
 
@@ -1980,6 +2041,10 @@ function Invoke-CopilotJson {
                 if ($event.type -eq 'assistant.message') {
                     $assistantContent = [string]$event.data.content
                 }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($assistantContent)) {
+                $assistantContent = Get-CopilotAssistantContentFromRaw -RawOutput $raw
             }
 
             if ([string]::IsNullOrWhiteSpace($assistantContent)) {
@@ -2066,10 +2131,12 @@ function Get-HeuristicDecision {
     $onlyToUser = ($addressed -eq 'to' -and (Get-ToCount -ToText ([string]$Latest.To)) -le 1)
     $threadHasUserReply = Test-ThreadHasUserReply -ThreadRecords $ThreadRecords -User $User
     $senderSmtpLower = ([string]$Latest.SenderSmtp).ToLowerInvariant()
+    $senderNameLower = ([string]$Latest.From.Name).ToLowerInvariant()
     $isManager = ($senderSmtpLower -and $Org.manager -and $senderSmtpLower -eq ([string]$Org.manager.email).ToLowerInvariant())
     $isDirect = @($Org.directs | Where-Object { $senderSmtpLower -eq ([string]$_.email).ToLowerInvariant() }).Count -gt 0
     $isPeer = @($Org.peers | Where-Object { $senderSmtpLower -eq ([string]$_.email).ToLowerInvariant() }).Count -gt 0
     $managerIncluded = Test-ManagerIncluded -Record $Latest -Org $Org
+    $trustedExternalContentSender = Test-TrustedExternalContentSender -Record $Latest
 
     $tier = 'INFORMED'
     $reason = 'Fallback Phase 2: informational update'
@@ -2094,7 +2161,27 @@ function Get-HeuristicDecision {
         $tier = 'ACTION NEEDED'
         $reason = 'Fallback Phase 1: explicit mention'
     }
-    elseif (Test-ExternalSpam -Record $Latest -Config $Config -CombinedText $combined) {
+    elseif ($subject -match '(?i)\bleft a comment in\b|\breplied to a comment in\b') {
+        $tier = 'LOW PRIORITY'
+        $reason = 'Fallback Phase 1: document comment notification'
+        $confidence = 'High'
+    }
+    elseif (($subject -match '(?i)\b(it''s time to )?check[\s-]?in\b.*\bflight\b') -and (($senderNameLower -match 'delta|alaska|united') -or ($senderSmtpLower -match 'delta|alaska|united'))) {
+        $tier = 'ACTION NEEDED'
+        $reason = 'Fallback Phase 1: airline check-in'
+        $confidence = 'High'
+    }
+    elseif ($subject -match '(?i)feedback promotion successful') {
+        $tier = 'INFORMED'
+        $reason = 'Fallback Phase 1: feedback promotion notice'
+        $confidence = 'High'
+    }
+    elseif ($subject -match '(?i)windows 11 continuous delivery shiproom notes' -and $addressed -ne 'to') {
+        $tier = 'INFORMED'
+        $reason = 'Fallback Phase 1: shiproom distro update'
+        $confidence = 'High'
+    }
+    elseif (-not $trustedExternalContentSender -and (Test-ExternalSpam -Record $Latest -Config $Config -CombinedText $combined)) {
         $tier = 'LOW PRIORITY'
         $reason = 'Fallback Phase 1: external spam'
     }
@@ -2130,7 +2217,11 @@ function Get-HeuristicDecision {
             $tier = 'PRIORITY INFORMED'
             $reason = 'Fallback Phase 2: manager included FYI'
         }
-        elseif ($addressed -eq 'cc' -and -not $hasAsk) {
+        elseif ($addressed -eq 'cc' -and ($isManager -or $isDirect -or $isPeer) -and -not $hasAsk) {
+            $tier = 'INFORMED'
+            $reason = 'Fallback Phase 2: org sender explicit cc'
+        }
+        elseif ($addressed -eq 'cc' -and -not $hasAsk -and -not $trustedExternalContentSender) {
             $tier = 'LOW PRIORITY'
             $reason = 'Fallback Phase 2: cc FYI'
         }

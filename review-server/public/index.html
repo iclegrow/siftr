@@ -50,6 +50,9 @@
       --radius-sm: 4px;
       --radius-md: 6px;
       --radius-lg: 10px;
+
+      --sticky-header-offset: 57px;
+      --sticky-filter-offset: 45px;
     }
 
     html { font-size: 16px; }
@@ -201,7 +204,7 @@
     /* ─── FILTER BAR ─── */
     .filter-bar {
       position: sticky;
-      top: 57px;
+      top: var(--sticky-header-offset);
       z-index: 99;
       background: var(--bg-deep);
       border-bottom: 1px solid var(--border);
@@ -288,7 +291,7 @@
     /* ─── TABLE ─── */
     .table-container {
       padding: 8px 28px 80px;
-      overflow-x: auto;
+      overflow: visible;
     }
 
     .email-table {
@@ -308,7 +311,7 @@
       padding: 8px 10px;
       border-bottom: 1px solid var(--border);
       position: sticky;
-      top: 102px;
+      top: calc(var(--sticky-header-offset) + var(--sticky-filter-offset));
       background: var(--bg-deep);
       z-index: 10;
       white-space: nowrap;
@@ -713,11 +716,27 @@
       saveTimer: null,
       saveState: 'idle',   // idle | saving | saved | error
 
+      syncStickyOffsets() {
+        const root = document.documentElement;
+        const header = document.querySelector('.header');
+        const filterBar = document.querySelector('.filter-bar');
+        if (!header || !filterBar) return;
+
+        root.style.setProperty('--sticky-header-offset', `${Math.ceil(header.getBoundingClientRect().height)}px`);
+        root.style.setProperty('--sticky-filter-offset', `${Math.ceil(filterBar.getBoundingClientRect().height)}px`);
+      },
+
       async init() {
         await this.loadData();
         this.buildFilterButtons();
-        this.render();
         this.updateStats();
+        this.syncStickyOffsets();
+        this.render();
+        window.addEventListener('resize', () => this.syncStickyOffsets());
+        window.addEventListener('load', () => this.syncStickyOffsets());
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(() => this.syncStickyOffsets());
+        }
       },
 
       async loadData() {
@@ -743,6 +762,7 @@
 
           document.getElementById('loadingState').style.display = 'none';
           document.getElementById('emailTable').style.display = 'table';
+          this.syncStickyOffsets();
         } catch (err) {
           document.getElementById('loadingState').innerHTML =
             `<div style="color:var(--tier-urgent)">Failed to load data: ${err.message}</div>`;
@@ -828,6 +848,7 @@
           <span class="stat"><span class="stat-value">${lowConf}</span> low conf</span>
           <span class="stat"><span class="stat-value changes">${changes}</span> changes</span>
         `;
+        this.syncStickyOffsets();
       },
 
       setSaveStatus(state, text) {
@@ -836,6 +857,7 @@
         const textEl = document.getElementById('saveText');
         el.className = `save-status ${state}`;
         textEl.textContent = text;
+        this.syncStickyOffsets();
       },
 
       scheduleAutoSave() {

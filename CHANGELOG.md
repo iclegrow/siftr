@@ -37,6 +37,17 @@ This log is maintained by Copilot to preserve context across sessions.
   obvious mojibake on load, and the review-store merge path now refreshes
   suspicious subject/sender fields from Outlook by `InternetMessageId` instead
   of guessing at a lossy text conversion.
+- **Review table headers now track the actual top chrome height**: sticky column
+  headings use measured header/filter-bar offsets instead of fixed pixel values,
+  so they no longer slide down and overlap row data when the top layout wraps.
+- **Review header stickiness no longer breaks inside the table wrapper**: the
+  review table container no longer creates its own overflow scrolling context,
+  which lets sticky column headings anchor to the page viewport instead of
+  sliding into the body rows.
+- **Trusted Capgemini sender now bypasses low-priority spam handling**:
+  heuristic fallback treats Shantanu Moghe at Capgemini as a legitimate
+  external partner, so those mails classify by content as inform/action rather
+  than falling into ⚪ LOW PRIORITY.
 
 ---
 
