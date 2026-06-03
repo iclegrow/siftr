@@ -20,8 +20,8 @@ when the user says "siftr", "triage my email", etc.
 Personal data (config, rules, org cache, learnings) lives outside the repo
 in a user-specific directory discovered at runtime:
 1. `$env:SIFTR_PERSONAL`
-2. `~/.siftr/`
-3. Legacy: `OneDrive/AI-Tools/siftr_personal/`
+2. `~/.siftr/personal-path.txt`
+3. `~/.siftr/`
 
 ## When working on Siftr
 

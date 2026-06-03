@@ -36,7 +36,7 @@ If you already have it, `git pull` to get the latest.
 ### 2. Run the install script
 
 ```powershell
-cd ~/<path>
+cd .\siftr
 .\install.ps1
 ```
 
@@ -46,7 +46,7 @@ and loads it into your current session.
 ### 3. Launch Copilot and say "siftr"
 
 ```
-cd ~/<path>
+cd .\siftr
 copilot
 ```
 

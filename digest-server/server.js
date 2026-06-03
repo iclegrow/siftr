@@ -75,25 +75,36 @@ function serveStatic(res, filePath) {
 // ---------------------------------------------------------------------------
 // User identity from org cache
 // ---------------------------------------------------------------------------
+function resolvePersonalDir() {
+  const candidates = [];
+  if (process.env.SIFTR_PERSONAL) candidates.push(process.env.SIFTR_PERSONAL);
+
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  if (home) {
+    const pointerPath = path.join(home, '.siftr', 'personal-path.txt');
+    try {
+      const pointerValue = fs.readFileSync(pointerPath, 'utf-8').trim();
+      if (pointerValue) candidates.push(pointerValue);
+    } catch { /* ignore */ }
+
+    candidates.push(path.join(home, '.siftr'));
+  }
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || '';
+}
+
 function getUserFirstName() {
   try {
-    // Try to read the org cache which has manager info — the user is the manager's direct
-    const orgCachePath = path.join(
-      process.env.USERPROFILE || '',
-      'OneDrive - Microsoft', 'AI-Tools', 'siftr_personal', 'org-cache.json'
-    );
+    const personalDir = resolvePersonalDir();
+    const orgCachePath = personalDir ? path.join(personalDir, 'org-cache.json') : '';
     let raw = fs.readFileSync(orgCachePath, 'utf-8');
     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
     const cache = JSON.parse(raw);
-    // The cache has manager.name (e.g. "Manager Person") — look for the user via peers
-    // Since the cache doesn't store the user's name, check for a userName field
     if (cache.userName) return cache.userName.split(' ')[0];
   } catch { /* ignore */ }
-  // Fallback: derive from Windows USERNAME (e.g. user.person → User)
-  // Map of known usernames for this environment
-  const knownUsers = { user.person: 'User' };
-  const username = (process.env.USERNAME || '').toLowerCase();
-  return knownUsers[username] || username.charAt(0).toUpperCase() + username.slice(1);
+
+  const username = (process.env.USERNAME || process.env.USER || '').trim();
+  return username ? username.charAt(0).toUpperCase() + username.slice(1) : 'there';
 }
 
 // ---------------------------------------------------------------------------

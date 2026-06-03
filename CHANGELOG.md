@@ -5,6 +5,46 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ---
 
+## 2026-06-03 — Public-safe personal data discovery
+
+- **Removed hardcoded local paths from the loop runner**: `Start-SiftrFullLoop.ps1`
+  now derives the repository root from its script location and discovers the
+  personal-data directory at runtime.
+- **Personal-data discovery is now public-safe**: PowerShell and Node helpers
+  check `SIFTR_PERSONAL`, then `~/.siftr/personal-path.txt`, then `~/.siftr/`
+  instead of embedding a machine-specific cloud-sync path.
+- **SLT roster data is no longer embedded in source**: optional CEO/direct-report
+  lookup data can be supplied through private config/org-cache data without
+  shipping real names or email aliases in the public repo.
+- **Tests and docs were anonymized**: fixture names/emails now use neutral
+  example identities, and local path examples were replaced with portable
+  forms.
+- **Loop state writes are more robust on synced folders**: state JSON writes now
+  use unique temporary files and atomic replace semantics to avoid stale temp
+  file collisions.
+
+---
+
+## 2026-05-19 — Keep self-authored and peer FYI mail out of Low Priority
+
+- **User-authored Inbox messages no longer fall into ⚪ LOW PRIORITY**:
+  fallback classification now keeps mail sent by the user at least 🟢 INFORMED
+  unless a higher-priority rule applies.
+- **Peer FYI detection now uses the same name-aware org matching as the prompt
+  path**: status updates from manager/direct/peer senders no longer depend on
+  an exact SMTP match to avoid being downgraded to ⚪ when Outlook resolves the
+  sender differently.
+- **Prompt guidance now explicitly forbids these downgrades**: the LLM input
+  records flag when the latest message is user-authored, and the universal
+  rules now state that user-authored mail plus non-automated mail from
+  manager/directs/peers should stay above ⚪ LOW PRIORITY.
+- **Loop scheduling now refreshes timezone data on every local/UTC conversion**:
+  long-lived continuous runners no longer keep using a stale timezone after
+  travel, so bookmark windows, hour boundaries, and log timestamps follow the
+  machine's current local timezone.
+
+---
+
 ## 2026-05-10 — Continuous loop mode and multi-day recovery
 
 - **Loop mode now supports a continuous scheduler**: `Start-SiftrFullLoop.ps1`
@@ -139,7 +179,7 @@ This log is maintained by Copilot to preserve context across sessions.
 
 ## 2026-04-29 — Universal rule: SLT mail is always priority informed
 
-- **New universal Phase 1 rule**: mail from **CEO Person** or one of his
+- **New universal Phase 1 rule**: mail from the cached CEO or one of the CEO's
   direct reports now automatically classifies as **PRIORITY INFORMED**.
 - **Org cache schema extended**: `org-cache.json` now documents an `slt`
   section with `ceo` and `directs`, so the rule can be driven from cached
@@ -245,8 +285,8 @@ This log is maintained by Copilot to preserve context across sessions.
   so the final scheduled triage cycle runs at or just after 8 PM before the
   loop stops for the day.
 - **Local runner path fixed**: the detached local loop runner now points at the
-  standalone `<local-path> checkout instead of the removed
-  `copilot-home\siftr` submodule path.
+  standalone Siftr checkout instead of the removed `copilot-home\siftr`
+  submodule path.
 
 ---
 
@@ -307,9 +347,9 @@ This log is maintained by Copilot to preserve context across sessions.
   a buried ask, read the latest body text and apply full Phase 2 rules.
 - Source: Sean Morgan thread (`RE: Feedback Requested: W+D Creator Council -
   Gaming Focus`) was incorrectly classified 🟢 INFORMED even though the body
-  clearly asked User to confirm ownership of the Xbox follow-up.
+  clearly asked the user to confirm ownership of the follow-up.
 - Source: Marjorie Ferris thread (`RE: Package to send`) was incorrectly
-  classified 🟢 INFORMED even though the body asked User for Project Contact's phone
+  classified 🟢 INFORMED even though the body asked the user for a contact's phone
   number.
 
 ---
@@ -342,7 +382,7 @@ This log is maintained by Copilot to preserve context across sessions.
 - **No retroactive rewrites**: already-categorized earlier messages are left
   alone, so later thread turns can escalate or de-escalate without changing
   historical labels.
-- Source: uncategorized earlier replies like `Re: 1:1 Michael/User` and
+- Source: uncategorized earlier replies like `Re: 1:1 Person/User` and
   `RE: CP+ Born Green - 4/20/2026` were being skipped because only the newest
   thread item received actions.
 

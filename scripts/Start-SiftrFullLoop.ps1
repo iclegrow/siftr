@@ -4,13 +4,25 @@ param(
     [switch]$Continuous,
     [datetime]$SinceOverride,
     [int]$MessageLimitOverride = 0,
-    [string]$SiftrRoot = '<local-path>',
-    [string]$PersonalDir = '<local-path> - Microsoft\AI-Tools\siftr_personal'
+    [string]$SiftrRoot,
+    [string]$PersonalDir
 )
 
 $ErrorActionPreference = 'Stop'
 
+if ([string]::IsNullOrWhiteSpace($SiftrRoot)) {
+    $SiftrRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+}
+
 . (Join-Path $SiftrRoot 'modules\Siftr-Inbox.ps1')
+
+if ([string]::IsNullOrWhiteSpace($PersonalDir)) {
+    $PersonalDir = Get-SiftrPersonalPath
+}
+
+if ([string]::IsNullOrWhiteSpace($PersonalDir)) {
+    throw 'Missing Siftr personal-data directory. Set SIFTR_PERSONAL or run siftr setup.'
+}
 
 $LoopStatePath = Join-Path $PersonalDir 'loop-state.json'
 $LastScanPath = Join-Path $PersonalDir 'last-scan.json'
@@ -80,14 +92,23 @@ function Write-Utf8Json {
         [System.IO.Directory]::CreateDirectory($directory) | Out-Null
     }
 
-    $tempPath = "$resolvedPath.$PID.tmp"
+    $tempPath = "$resolvedPath.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$resolvedPath.$PID.$([guid]::NewGuid().ToString('N')).bak"
     try {
         [System.IO.File]::WriteAllText($tempPath, $json, $Utf8NoBom)
-        Move-Item -LiteralPath $tempPath -Destination $resolvedPath -Force
+        if ([System.IO.File]::Exists($resolvedPath)) {
+            [System.IO.File]::Replace($tempPath, $resolvedPath, $backupPath, $true)
+        }
+        else {
+            [System.IO.File]::Move($tempPath, $resolvedPath)
+        }
     }
     finally {
         if (Test-Path -LiteralPath $tempPath) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -148,7 +169,7 @@ function Write-LoopLog {
     param([Parameter(Mandatory)][string]$Line)
 
     Rotate-LoopLogIfNeeded -Path $LogPath -RetentionDays $LogRetentionDays
-    $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $stamp = (Get-CurrentLocalDateTime).ToString('yyyy-MM-dd HH:mm:ss')
     $text = "[$stamp] $Line"
     Invoke-LoopAppend -Path $LogPath -Value $text
     Write-Output $Line
@@ -269,7 +290,7 @@ function Invoke-LoopLogRetention {
     $extension = [System.IO.Path]::GetExtension($Path)
     $escapedBaseName = [regex]::Escape($baseName)
     $escapedExtension = [regex]::Escape($extension)
-    $cutoffDate = (Get-Date).Date.AddDays(-1 * [Math]::Max($RetentionDays, 0))
+    $cutoffDate = (Get-CurrentLocalDateTime).Date.AddDays(-1 * [Math]::Max($RetentionDays, 0))
 
     foreach ($candidate in Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue) {
         if ($candidate.Name -notmatch "^$escapedBaseName\.(\d{4}-\d{2}-\d{2})$escapedExtension$") { continue }
@@ -298,7 +319,7 @@ function Rotate-LoopLogIfNeeded {
 
     if (Test-Path -LiteralPath $Path) {
         $item = Get-Item -LiteralPath $Path -ErrorAction Stop
-        $today = (Get-Date).Date
+        $today = (Get-CurrentLocalDateTime).Date
         if ($item.LastWriteTime.Date -lt $today) {
             $archivePath = Get-RotatedLoopLogPath -Path $Path -Date $item.LastWriteTime.Date
             $archiveDirectory = Split-Path -Parent $archivePath
@@ -330,7 +351,7 @@ function Get-UtcDateTime {
         }
 
         if ($Timestamp.Kind -eq [System.DateTimeKind]::Local) {
-            return $Timestamp.ToUniversalTime()
+            return (Convert-CurrentLocalToUtc -Timestamp $Timestamp)
         }
 
         return [datetime]::SpecifyKind($Timestamp, [System.DateTimeKind]::Utc)
@@ -341,6 +362,41 @@ function Get-UtcDateTime {
     }
 
     ([datetimeoffset]::Parse([string]$Timestamp)).UtcDateTime
+}
+
+function Get-CurrentTimeZone {
+    [System.TimeZoneInfo]::ClearCachedData()
+    [System.TimeZoneInfo]::Local
+}
+
+function Get-CurrentLocalDateTime {
+    $local = [System.TimeZoneInfo]::ConvertTime([datetimeoffset]::UtcNow, (Get-CurrentTimeZone))
+    [datetime]::SpecifyKind($local.DateTime, [System.DateTimeKind]::Local)
+}
+
+function Convert-UtcToCurrentLocalDateTime {
+    param([Parameter(Mandatory)]$Timestamp)
+
+    $utc = Get-UtcDateTime -Timestamp $Timestamp
+    $local = [System.TimeZoneInfo]::ConvertTimeFromUtc($utc, (Get-CurrentTimeZone))
+    [datetime]::SpecifyKind($local, [System.DateTimeKind]::Local)
+}
+
+function Convert-CurrentLocalToUtc {
+    param([Parameter(Mandatory)][datetime]$Timestamp)
+
+    if ($Timestamp.Kind -eq [System.DateTimeKind]::Utc) {
+        return $Timestamp
+    }
+
+    $localClock = if ($Timestamp.Kind -eq [System.DateTimeKind]::Local) {
+        [datetime]::SpecifyKind($Timestamp, [System.DateTimeKind]::Unspecified)
+    }
+    else {
+        $Timestamp
+    }
+
+    [System.TimeZoneInfo]::ConvertTimeToUtc($localClock, (Get-CurrentTimeZone))
 }
 
 function New-LoopOwner {
@@ -367,7 +423,15 @@ function Test-LoopOwnedByCurrentRunner {
 function Test-ContinuousMode {
     param($State)
 
-    ([string]$State.mode).ToLowerInvariant() -eq 'continuous'
+    if (-not $State) { return $false }
+    $mode = if ($State -is [System.Collections.IDictionary] -and $State.Contains('mode')) {
+        [string]$State['mode']
+    }
+    else {
+        [string]$State.mode
+    }
+
+    $mode.ToLowerInvariant() -eq 'continuous'
 }
 
 function Test-LoopHasEndTime {
@@ -405,7 +469,13 @@ function Ensure-ResilienceStateFields {
         @{ Name = 'lastFallbackCount'; Value = 0 },
         @{ Name = 'shadowComparison'; Value = ([pscustomobject](New-ShadowComparisonMetrics)) }
     )) {
-        if (-not $State.PSObject.Properties[$pair.Name]) {
+        $hasProperty = if ($State -is [System.Collections.IDictionary]) {
+            $State.Contains($pair.Name)
+        }
+        else {
+            [bool]$State.PSObject.Properties[$pair.Name]
+        }
+        if (-not $hasProperty) {
             Set-StateProperty -State $State -Name $pair.Name -Value $pair.Value
         }
     }
@@ -415,7 +485,7 @@ function Get-LoopReviewDateKey {
     param($State)
 
     if ($State -and (Test-ContinuousMode -State $State)) {
-        return (Get-Date).ToString('yyyy-MM-dd')
+        return (Get-CurrentLocalDateTime).ToString('yyyy-MM-dd')
     }
 
     if ($State -and $State.reviewDateLocal) {
@@ -424,12 +494,12 @@ function Get-LoopReviewDateKey {
 
     if ($State -and $State.startedAt) {
         try {
-            return (Get-UtcDateTime -Timestamp $State.startedAt).ToLocalTime().ToString('yyyy-MM-dd')
+            return (Convert-UtcToCurrentLocalDateTime -Timestamp $State.startedAt).ToString('yyyy-MM-dd')
         }
         catch {}
     }
 
-    (Get-Date).ToString('yyyy-MM-dd')
+    (Get-CurrentLocalDateTime).ToString('yyyy-MM-dd')
 }
 
 function Get-LoopReviewDataPath {
@@ -667,19 +737,19 @@ function Register-Quarantine {
 }
 
 function Get-TodayDigestSlotsUtc {
-    $today = (Get-Date).Date
+    $today = (Get-CurrentLocalDateTime).Date
     @(
-        $today.AddHours(12).ToUniversalTime().ToString('o'),
-        $today.AddHours(17).ToUniversalTime().ToString('o')
+        (Convert-CurrentLocalToUtc -Timestamp $today.AddHours(12)).ToString('o'),
+        (Convert-CurrentLocalToUtc -Timestamp $today.AddHours(17)).ToString('o')
     )
 }
 
 function Get-DefaultEndTimeLocal {
-    (Get-Date).Date.AddHours(20)
+    (Get-CurrentLocalDateTime).Date.AddHours(20)
 }
 
 function Get-LoopRecentCutoffLocal {
-    (Get-Date).AddHours(-$LoopRecentWindowHours)
+    (Get-CurrentLocalDateTime).AddHours(-$LoopRecentWindowHours)
 }
 
 function Get-EffectiveLoopSince {
@@ -690,7 +760,7 @@ function Get-EffectiveLoopSince {
 
     if ($State -and (Test-ContinuousMode -State $State)) {
         if ($Candidate.Kind -eq [System.DateTimeKind]::Utc) {
-            return $Candidate.ToLocalTime()
+            return (Convert-UtcToCurrentLocalDateTime -Timestamp $Candidate)
         }
 
         return $Candidate
@@ -698,7 +768,7 @@ function Get-EffectiveLoopSince {
 
     $recentCutoffLocal = Get-LoopRecentCutoffLocal
     if ($Candidate.Kind -eq [System.DateTimeKind]::Utc) {
-        $Candidate = $Candidate.ToLocalTime()
+        $Candidate = Convert-UtcToCurrentLocalDateTime -Timestamp $Candidate
     }
 
     if ($Candidate -lt $recentCutoffLocal) {
@@ -722,7 +792,7 @@ function Filter-LoopMessagesBySince {
 function Get-NextCycleBoundaryLocal {
     param([datetime]$After)
 
-    $boundary = Get-Date -Hour $After.Hour -Minute 0 -Second 0
+    $boundary = $After.Date.AddHours($After.Hour)
     if ($After.Minute -gt 5 -or $After.Second -gt 0) {
         return $boundary.AddHours(1)
     }
@@ -745,7 +815,7 @@ function Set-NextCycleAt {
         [string]$HeartbeatReason = 'scheduled'
     )
 
-    Set-StateProperty -State $State -Name 'nextCycleAt' -Value $NextLocal.ToUniversalTime().ToString('o')
+    Set-StateProperty -State $State -Name 'nextCycleAt' -Value (Convert-CurrentLocalToUtc -Timestamp $NextLocal).ToString('o')
     Save-LoopState -State $State -HeartbeatReason $HeartbeatReason
 }
 
@@ -1120,7 +1190,7 @@ function Schedule-CycleFailure {
     $endTimeUtc = Get-LoopEndTimeUtc -State $State
     $nextHourlyLocal = $null
     if ($State.retryFallbackCycleAt) {
-        try { $nextHourlyLocal = (Get-UtcDateTime -Timestamp $State.retryFallbackCycleAt).ToLocalTime() } catch {}
+        try { $nextHourlyLocal = Convert-UtcToCurrentLocalDateTime -Timestamp $State.retryFallbackCycleAt } catch {}
     }
     if (-not $nextHourlyLocal) {
         $nextHourlyLocal = Get-NextCycleBoundaryLocal -After $CycleLocal
@@ -1129,15 +1199,16 @@ function Schedule-CycleFailure {
     $retryLocal = $null
     if ([int]$State.retryAttemptCount -lt 1) {
         $candidateRetryLocal = $CycleLocal.AddMinutes(15)
-        if ($candidateRetryLocal.ToUniversalTime() -lt $nextHourlyLocal.ToUniversalTime() -and
-            (($null -eq $endTimeUtc) -or $candidateRetryLocal.ToUniversalTime() -le $endTimeUtc)) {
+        $candidateRetryUtc = Convert-CurrentLocalToUtc -Timestamp $candidateRetryLocal
+        $nextHourlyUtc = Convert-CurrentLocalToUtc -Timestamp $nextHourlyLocal
+        if ($candidateRetryUtc -lt $nextHourlyUtc -and (($null -eq $endTimeUtc) -or $candidateRetryUtc -le $endTimeUtc)) {
             $retryLocal = $candidateRetryLocal
             Set-StateProperty -State $State -Name 'retryAttemptCount' -Value 1
-            Set-StateProperty -State $State -Name 'retryFallbackCycleAt' -Value $nextHourlyLocal.ToUniversalTime().ToString('o')
+            Set-StateProperty -State $State -Name 'retryFallbackCycleAt' -Value $nextHourlyUtc.ToString('o')
             Set-NextCycleAt -State $State -NextLocal $retryLocal -HeartbeatReason 'retry-scheduled'
             Write-LoopEvent -Type 'cycle_retry_scheduled' -Message 'Cycle retry scheduled after failure' -Data @{
-                retryAt = $retryLocal.ToUniversalTime().ToString('o')
-                nextHourlyAt = $nextHourlyLocal.ToUniversalTime().ToString('o')
+                retryAt = $candidateRetryUtc.ToString('o')
+                nextHourlyAt = $nextHourlyUtc.ToString('o')
                 error = $ErrorText
             }
         }
@@ -1145,7 +1216,7 @@ function Schedule-CycleFailure {
 
     if (-not $retryLocal) {
         Clear-CycleRetryState -State $State
-        if ($endTimeUtc -and $nextHourlyLocal.ToUniversalTime() -gt $endTimeUtc) {
+        if ($endTimeUtc -and (Convert-CurrentLocalToUtc -Timestamp $nextHourlyLocal) -gt $endTimeUtc) {
             Emit-CycleFailureStatus -CycleLocal $CycleLocal -ErrorText $ErrorText
             Finalize-Loop -State $State
             return
@@ -1154,7 +1225,13 @@ function Schedule-CycleFailure {
         Set-NextCycleAt -State $State -NextLocal $nextHourlyLocal -HeartbeatReason 'scheduled'
     }
 
-    Emit-CycleFailureStatus -CycleLocal $CycleLocal -ErrorText $ErrorText -RetryLocal $retryLocal -NextHourlyLocal $nextHourlyLocal
+    $statusArgs = @{
+        CycleLocal = $CycleLocal
+        ErrorText = $ErrorText
+    }
+    if ($retryLocal) { $statusArgs.RetryLocal = $retryLocal }
+    if ($nextHourlyLocal) { $statusArgs.NextHourlyLocal = $nextHourlyLocal }
+    Emit-CycleFailureStatus @statusArgs
 }
 
 function Trim-Text {
@@ -1349,28 +1426,17 @@ function Get-UserContext {
     }
 }
 
-function Get-DefaultSltRoster {
+function Get-ConfiguredSltRoster {
+    param([AllowNull()]$Config)
+
+    if (-not $Config -or -not $Config.PSObject.Properties['sltRoster'] -or -not $Config.sltRoster) {
+        return $null
+    }
+
+    $roster = $Config.sltRoster
     [ordered]@{
-        ceo = [ordered]@{
-            name = 'CEO Person'
-            identities = @('user@example.test', 'satyan', 'CEO Person')
-        }
-        directs = @(
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'amyhood', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'bradsmi', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'scottgu', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'rajeshj', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'mustafas', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'rroslansky', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'Executive Person') }
-            [ordered]@{ name = 'Executive Person'; identities = @('user@example.test', 'user@example.test', 'Executive Person') }
-        )
+        ceo = if ($roster.ceo) { $roster.ceo } else { $null }
+        directs = if ($roster.directs) { @($roster.directs) } else { @() }
     }
 }
 
@@ -1454,10 +1520,13 @@ function Ensure-SltOrgCache {
     param(
         [Parameter(Mandatory)]$Org,
         [Parameter(Mandatory)]$Namespace,
-        [Parameter(Mandatory)][string]$Path
+        [Parameter(Mandatory)][string]$Path,
+        [AllowNull()]$Config
     )
 
-    $roster = Get-DefaultSltRoster
+    $roster = Get-ConfiguredSltRoster -Config $Config
+    if (-not $roster -or -not $roster.ceo) { return $Org }
+
     $changed = $false
 
     if (-not $Org.PSObject.Properties['slt'] -or -not $Org.slt) {
@@ -1642,6 +1711,20 @@ function Test-ThreadHasUserReply {
     $false
 }
 
+function Test-MessageFromUser {
+    param(
+        [Parameter(Mandatory)]$Record,
+        [Parameter(Mandatory)]$User
+    )
+
+    $sender = (([string]$Record.From.Name + ' ' + [string]$Record.From.Address + ' ' + [string]$Record.SenderSmtp) -replace '\s+', ' ').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($sender)) { return $false }
+    if ($User.Smtp -and $sender.Contains($User.Smtp.ToLowerInvariant())) { return $true }
+    if ($User.Alias -and $sender.Contains($User.Alias.ToLowerInvariant())) { return $true }
+    if ($User.DisplayName -and $sender.Contains($User.DisplayName.ToLowerInvariant())) { return $true }
+    $false
+}
+
 function Test-TextMatch {
     param(
         [AllowNull()][string]$Text,
@@ -1785,7 +1868,7 @@ Prompt safety:
 Phase 1 first-match rules:
 - URGENT ACTION: automated approval/action systems and approval-required subjects.
 - ACTION NEEDED: explicit @mention of user; subject markers like [ACTION], Action required, Input needed from a real person/partner.
-- PRIORITY INFORMED: any mail from the CEO (CEO Person) or one of his direct reports. In prompt records this appears as senderRelation = slt.
+- PRIORITY INFORMED: any mail from the cached CEO or one of the CEO's direct reports. In prompt records this appears as senderRelation = slt.
 - LOW PRIORITY: SharePoint access requests, document comment notifications, News you might have missed, Meeting Forward Notification, OOF/away, Teams private-team join requests, clear external spam/marketing.
 - CALENDAR: scheduling-bot invites/cancellations or any MessageClass starting IPM.Schedule.Meeting.
 
@@ -1793,8 +1876,8 @@ Phase 2 judgment:
 - URGENT ACTION: direct ask to the user with deadline today/overdue/asap/high urgency.
 - ACTION NEEDED: manager/direct/peer asking user for input; user on To with clear ask/question/request; soft asks still count; short logistical questions count; high-importance action mail; forward that puts the ball in user's court; awaiting-response context where user previously replied and latest message needs user's answer; reply asking follow-up questions to user's outbound request.
 - PRIORITY INFORMED: reply completes user's prior request; user named and manager also included; informational but user directly on To in a small/senior/legal/staff context; travel logistics at least this tier unless they require action, then ACTION NEEDED.
-- INFORMED: status updates and pure FYIs, especially from manager/directs/peers.
-- LOW PRIORITY: general FYI/newsletter/digest/build report, user only on CC, routine no-action notifications.
+- INFORMED: status updates and pure FYIs, especially from manager/directs/peers; user-authored mail that remains in Inbox should stay at least INFORMED unless a higher tier applies.
+- LOW PRIORITY: general FYI/newsletter/digest/build report, user only on CC, routine no-action notifications. Do not use LOW PRIORITY for user-authored mail or non-automated mail from manager/directs/peers.
 - External non-spam fallback is INFORMED.
 
 Tie-breakers:
@@ -1875,7 +1958,7 @@ function Get-CopilotEventObjects {
         if ($jsonStart -lt 0) { continue }
         $jsonLine = $line.Substring($jsonStart)
         try {
-            $events.Add(($jsonLine | ConvertFrom-Json -Depth 50))
+            $events.Add(($jsonLine | ConvertFrom-Json))
         }
         catch {}
     }
@@ -2017,9 +2100,9 @@ function Invoke-CopilotRaw {
         $process = Start-Process @startParams `
             
 
-        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        $deadline = (Get-CurrentLocalDateTime).AddSeconds($TimeoutSeconds)
         while (-not $process.HasExited) {
-            if ((Get-Date) -ge $deadline) {
+            if ((Get-CurrentLocalDateTime) -ge $deadline) {
                 try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
                 throw "Copilot classification timed out after $TimeoutSeconds seconds."
             }
@@ -2112,7 +2195,7 @@ function Invoke-CopilotJson {
             }
 
             $clean = Strip-CodeFences -Text $assistantContent
-            return ($clean | ConvertFrom-Json -Depth 50 -ErrorAction Stop)
+            return ($clean | ConvertFrom-Json -ErrorAction Stop)
         }
         catch {
             if ($attempt -ge $MaxAttempts) {
@@ -2190,11 +2273,12 @@ function Get-HeuristicDecision {
     $internal = Test-InternalSender -Record $Latest -Config $Config
     $onlyToUser = ($addressed -eq 'to' -and (Get-ToCount -ToText ([string]$Latest.To)) -le 1)
     $threadHasUserReply = Test-ThreadHasUserReply -ThreadRecords $ThreadRecords -User $User
+    $fromUser = Test-MessageFromUser -Record $Latest -User $User
     $senderSmtpLower = ([string]$Latest.SenderSmtp).ToLowerInvariant()
-    $senderNameLower = ([string]$Latest.From.Name).ToLowerInvariant()
-    $isManager = ($senderSmtpLower -and $Org.manager -and $senderSmtpLower -eq ([string]$Org.manager.email).ToLowerInvariant())
-    $isDirect = @($Org.directs | Where-Object { $senderSmtpLower -eq ([string]$_.email).ToLowerInvariant() }).Count -gt 0
-    $isPeer = @($Org.peers | Where-Object { $senderSmtpLower -eq ([string]$_.email).ToLowerInvariant() }).Count -gt 0
+    $senderRelation = Get-SenderRelation -SenderSmtp $senderSmtpLower -SenderName ([string]$Latest.From.Name) -Org $Org
+    $isManager = ($senderRelation -eq 'manager')
+    $isDirect = ($senderRelation -eq 'direct')
+    $isPeer = ($senderRelation -eq 'peer')
     $managerIncluded = Test-ManagerIncluded -Record $Latest -Org $Org
     $trustedExternalContentSender = Test-TrustedExternalContentSender -Record $Latest
 
@@ -2208,7 +2292,7 @@ function Get-HeuristicDecision {
         $reason = 'Fallback Phase 1: meeting item'
         $confidence = 'High'
     }
-    elseif ((Get-SenderRelation -SenderSmtp $senderSmtpLower -SenderName ([string]$Latest.From.Name) -Org $Org) -eq 'slt') {
+    elseif ($senderRelation -eq 'slt') {
         $tier = 'PRIORITY INFORMED'
         $reason = 'Fallback Phase 1: SLT sender'
         $confidence = 'High'
@@ -2253,6 +2337,12 @@ function Get-HeuristicDecision {
             $tier = 'URGENT ACTION'
             $reason = 'Fallback Phase 2: direct ask due today'
         }
+        elseif ($fromUser) {
+            $tier = 'INFORMED'
+            $reason = 'Fallback Phase 2: user-authored message'
+            $confidence = 'High'
+            $uncertainty = ''
+        }
         elseif ($isManager -and $hasAsk) {
             $tier = 'ACTION NEEDED'
             $reason = 'Fallback Phase 2: manager ask'
@@ -2277,9 +2367,9 @@ function Get-HeuristicDecision {
             $tier = 'PRIORITY INFORMED'
             $reason = 'Fallback Phase 2: manager included FYI'
         }
-        elseif ($addressed -eq 'cc' -and ($isManager -or $isDirect -or $isPeer) -and -not $hasAsk) {
+        elseif (($isManager -or $isDirect -or $isPeer) -and -not $hasAsk) {
             $tier = 'INFORMED'
-            $reason = 'Fallback Phase 2: org sender explicit cc'
+            $reason = 'Fallback Phase 2: org sender FYI'
         }
         elseif ($addressed -eq 'cc' -and -not $hasAsk -and -not $trustedExternalContentSender) {
             $tier = 'LOW PRIORITY'
@@ -2345,6 +2435,7 @@ function New-ThreadPromptRecord {
         conversationId = [string]$Latest.ConversationId
         addressed = $addressed
         senderRelation = $senderRelation
+        latestFromUser = (Test-MessageFromUser -Record $Latest -User $User)
         onlyToUser = ($addressed -eq 'to' -and (Get-ToCount -ToText ([string]$Latest.To)) -le 1)
         managerIncluded = $managerIncluded
         internalSender = $internal
@@ -2515,7 +2606,7 @@ function Get-DigestRecords {
     )
 
     $lowPriFolder = if ($Config.actions.lowPriority.folder) { [string]$Config.actions.lowPriority.folder } else { 'LowPri' }
-    $sinceLocal = (Get-Date).Date.AddMinutes(1)
+    $sinceLocal = (Get-CurrentLocalDateTime).Date.AddMinutes(1)
     if ($State) {
         Update-LoopHeartbeatIfNeeded -State $State -Reason 'digest-fetching' -MinimumSeconds 0
     }
@@ -2656,7 +2747,7 @@ function New-LoopState {
         [switch]$Continuous
     )
 
-    $now = Get-Date
+    $now = Get-CurrentLocalDateTime
     $endLocal = $null
     $mode = if ($Continuous) { 'continuous' } else { 'daily' }
     if (-not $Continuous) {
@@ -2686,7 +2777,7 @@ function New-LoopState {
         status = 'active'
         mode = $mode
         startedAt = ([datetime]::UtcNow).ToString('o')
-        endTime = if ($endLocal) { $endLocal.ToUniversalTime().ToString('o') } else { $null }
+        endTime = if ($endLocal) { (Convert-CurrentLocalToUtc -Timestamp $endLocal).ToString('o') } else { $null }
         nextCycleAt = ([datetime]::UtcNow).ToString('o')
         lastCycleCompletedAt = $null
         lastCycleStartedAt = $null
@@ -2715,8 +2806,8 @@ function New-LoopState {
         lastDiagnosticResult = $null
         lastFallbackCount = 0
         shadowComparison = [pscustomobject](New-ShadowComparisonMetrics)
-        reviewDateLocal = (Get-Date).ToString('yyyy-MM-dd')
-        reviewDataPath = (Get-LoopReviewDataPath -DateKey ((Get-Date).ToString('yyyy-MM-dd')))
+        reviewDateLocal = (Get-CurrentLocalDateTime).ToString('yyyy-MM-dd')
+        reviewDataPath = (Get-LoopReviewDataPath -DateKey ((Get-CurrentLocalDateTime).ToString('yyyy-MM-dd')))
         stats = [ordered]@{
             totalEmails = 0
             urgent = 0
@@ -3011,7 +3102,7 @@ function Run-DigestSlot {
     }
 
     $null = New-Item -ItemType Directory -Path $DigestDir -Force
-    $stamp = Get-Date -Format 'yyyy-MM-dd-HHmm'
+    $stamp = (Get-CurrentLocalDateTime).ToString('yyyy-MM-dd-HHmm')
     $digestPath = Join-Path $DigestDir ("digest-$stamp.json")
     Write-Utf8Json -Path $digestPath -Object ([ordered]@{
         digestRun = ([datetime]::UtcNow).ToString('o')
@@ -3022,7 +3113,7 @@ function Run-DigestSlot {
 
     Start-DigestServer -JsonPath $digestPath
 
-    $slotLocal = (Get-UtcDateTime -Timestamp $SlotUtc).ToLocalTime()
+    $slotLocal = Convert-UtcToCurrentLocalDateTime -Timestamp $SlotUtc
     $label = if ($slotLocal.Hour -eq 12) { 'Noon' } elseif ($slotLocal.Hour -eq 17) { '5 PM' } else { $slotLocal.ToString('h:mm tt') }
     Write-LoopLog ("[digest] {0} digest ready at http://localhost:8474 - say ""siftr process my digest"" when ready" -f $label)
     Register-LoopSuccess -State $State -Phase 'digest'
@@ -3041,7 +3132,7 @@ function Run-Cycle {
         $bookmarkSince = $SinceOverride
     }
     else {
-        $bookmarkSince = (Get-Date).AddHours(-24)
+        $bookmarkSince = (Get-CurrentLocalDateTime).AddHours(-24)
         $scan = Read-JsonFile -Path $LastScanPath
         if ($scan -and $scan.lastScanCompleted) {
             try { $bookmarkSince = [datetime]$scan.lastScanCompleted } catch {}
@@ -3049,7 +3140,7 @@ function Run-Cycle {
     }
     $since = Get-EffectiveLoopSince -Candidate $bookmarkSince -State $State
  
-    $cycleLocal = Get-Date
+    $cycleLocal = Get-CurrentLocalDateTime
     $messageLimit = if ($MessageLimitOverride -gt 0) {
         $MessageLimitOverride
     }
@@ -3279,8 +3370,8 @@ try {
         }
         $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
         if ($cycleSucceeded) {
-            $schedule = Get-PostCycleSchedule -State $state -AfterCycle (Get-Date) -MessageCount ([int]$cycleResult.messageCount) -MessageLimit ([int]$cycleResult.messageLimit)
-            if ((Test-LoopHasEndTime -State $state) -and $schedule.NextLocal.ToUniversalTime() -gt (Get-LoopEndTimeUtc -State $state)) {
+            $schedule = Get-PostCycleSchedule -State $state -AfterCycle (Get-CurrentLocalDateTime) -MessageCount ([int]$cycleResult.messageCount) -MessageLimit ([int]$cycleResult.messageLimit)
+            if ((Test-LoopHasEndTime -State $state) -and (Convert-CurrentLocalToUtc -Timestamp $schedule.NextLocal) -gt (Get-LoopEndTimeUtc -State $state)) {
                 Finalize-Loop -State $state
             }
             else {
@@ -3291,18 +3382,19 @@ try {
     }
 
     if ($resume) {
-        $lastCycle = if ($state.lastCycleCompletedAt) { (Get-UtcDateTime -Timestamp $state.lastCycleCompletedAt).ToLocalTime().ToString('h:mm tt') } else { 'none yet' }
-        Write-LoopLog ("[resume] Resuming siftr loop - last cycle was at {0}, next due at {1}" -f $lastCycle, (Get-UtcDateTime -Timestamp $state.nextCycleAt).ToLocalTime().ToString('h:mm tt'))
+        $lastCycle = if ($state.lastCycleCompletedAt) { (Convert-UtcToCurrentLocalDateTime -Timestamp $state.lastCycleCompletedAt).ToString('h:mm tt') } else { 'none yet' }
+        Write-LoopLog ("[resume] Resuming siftr loop - last cycle was at {0}, next due at {1}" -f $lastCycle, (Convert-UtcToCurrentLocalDateTime -Timestamp $state.nextCycleAt).ToString('h:mm tt'))
     }
     else {
-        $nextBoundary = Get-NextCycleBoundaryLocal -After (Get-Date)
+        $nextBoundary = Get-NextCycleBoundaryLocal -After (Get-CurrentLocalDateTime)
         if (Test-ContinuousMode -State $state) {
             Write-LoopLog '[start] Siftr continuous LLM-driven loop started'
             Write-LoopLog '   Mode: continuous (runs until stopped)'
         }
         else {
             Write-LoopLog '[start] Siftr full LLM-driven loop started'
-            Write-LoopLog ("   End time: {0}" -f (Get-UtcDateTime -Timestamp $state.endTime).ToLocalTime().ToString('h:mm tt'))
+            $endLabel = if ($state.endTime) { (Convert-UtcToCurrentLocalDateTime -Timestamp $state.endTime).ToString('h:mm tt') } else { 'not set' }
+            Write-LoopLog ("   End time: {0}" -f $endLabel)
         }
         Write-LoopLog '   Triage: starting now, then every hour on the hour'
         Write-LoopLog '   Digest: manual only (loop no longer auto-runs digests)'
@@ -3335,17 +3427,17 @@ try {
             }
             catch {
                 Register-LoopFailure -State $state -Phase 'cycle' -ErrorText $_.Exception.Message -Persist
-                $cycleFailureLocal = Get-Date
+                $cycleFailureLocal = Get-CurrentLocalDateTime
                 $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
                 Schedule-CycleFailure -State $state -CycleLocal $cycleFailureLocal -ErrorText $_.Exception.Message
             }
             $state = Read-JsonFile -Path $LoopStatePath -ThrowOnError
 
             if ($cycleSucceeded) {
-                $afterCycle = Get-Date
+                $afterCycle = Get-CurrentLocalDateTime
                 $schedule = Get-PostCycleSchedule -State $state -AfterCycle $afterCycle -MessageCount ([int]$cycleResult.messageCount) -MessageLimit ([int]$cycleResult.messageLimit)
                 $nextBoundaryLocal = $schedule.NextLocal
-                if ($endTimeUtc -and $nextBoundaryLocal.ToUniversalTime() -gt $endTimeUtc) {
+                if ($endTimeUtc -and (Convert-CurrentLocalToUtc -Timestamp $nextBoundaryLocal) -gt $endTimeUtc) {
                     Finalize-Loop -State $state
                     break
                 }
@@ -3357,8 +3449,8 @@ try {
                         $lastCycleUtc = Get-UtcDateTime -Timestamp $state.lastCycleCompletedAt
                         $nextCycleUtc = Get-UtcDateTime -Timestamp $state.nextCycleAt
                         if ($nextCycleUtc -le $lastCycleUtc) {
-                            $repairBoundaryLocal = Get-NextCycleBoundaryLocal -After $lastCycleUtc.ToLocalTime()
-                            if ((-not $endTimeUtc) -or $repairBoundaryLocal.ToUniversalTime() -le $endTimeUtc) {
+                            $repairBoundaryLocal = Get-NextCycleBoundaryLocal -After (Convert-UtcToCurrentLocalDateTime -Timestamp $lastCycleUtc)
+                            if ((-not $endTimeUtc) -or (Convert-CurrentLocalToUtc -Timestamp $repairBoundaryLocal) -le $endTimeUtc) {
                                 Set-NextCycleAt -State $state -NextLocal $repairBoundaryLocal -HeartbeatReason 'schedule-repair'
                             }
                         }
@@ -3366,7 +3458,7 @@ try {
                     catch {}
                 }
 
-                $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($nextBoundaryLocal - (Get-Date)).TotalMinutes))
+                $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($nextBoundaryLocal - (Get-CurrentLocalDateTime)).TotalMinutes))
                 if ($schedule.Mode -eq 'catch-up') {
                     Write-LoopLog ("[catch-up] Backlog likely remains; next cycle: {0} ({1} min)" -f $nextBoundaryLocal.ToString('h:mm tt'), $sleepMinutes)
                 }
@@ -3375,8 +3467,8 @@ try {
                 }
             }
             else {
-                $scheduledNextLocal = (Get-UtcDateTime -Timestamp $state.nextCycleAt).ToLocalTime()
-                $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($scheduledNextLocal - (Get-Date)).TotalMinutes))
+                $scheduledNextLocal = Convert-UtcToCurrentLocalDateTime -Timestamp $state.nextCycleAt
+                $sleepMinutes = [Math]::Max(0, [int][Math]::Round(($scheduledNextLocal - (Get-CurrentLocalDateTime)).TotalMinutes))
                 Write-LoopLog ("[sleep] Next cycle: {0} ({1} min)" -f $scheduledNextLocal.ToString('h:mm tt'), $sleepMinutes)
             }
             continue

@@ -7,9 +7,9 @@
     Provides functions to categorize messages and move them between Outlook
     folders based on Siftr triage classifications.
 
-    On load, the module discovers the siftr_personal directory (checking
-    $env:SIFTR_PERSONAL, ~/.siftr, and OneDrive) and reads config.json from
-    it when present.  Folder rules and category names honour the config;
+    On load, the module discovers the personal-data directory (checking
+    $env:SIFTR_PERSONAL, ~/.siftr/personal-path.txt, and ~/.siftr) and reads
+    config.json from it when present. Folder rules and category names honour the config;
     legacy hard-coded defaults are used when no config.json exists.
 
     Current back-end: Outlook COM automation.
@@ -42,10 +42,16 @@
 
 # Discover the personal-data directory (first match wins)
 $script:SiftrPersonalPath = $null
+$_personalPointerPath = Join-Path $env:USERPROFILE '.siftr\personal-path.txt'
+$_personalPointerValue = $null
+if (Test-Path -LiteralPath $_personalPointerPath) {
+    $_personalPointerValue = (Get-Content -LiteralPath $_personalPointerPath -Raw).Trim()
+}
+
 $_candidatePaths = @(
     $env:SIFTR_PERSONAL,
-    (Join-Path $env:USERPROFILE '.siftr'),
-    (Join-Path $env:USERPROFILE '<personal-data-path>')
+    $_personalPointerValue,
+    (Join-Path $env:USERPROFILE '.siftr')
 ) | Where-Object { $_ -and (Test-Path $_) }
 
 if ($_candidatePaths) {
@@ -443,7 +449,9 @@ function Move-SiftrMessage {
     #>
     param(
         [Parameter(Mandatory)][string]$InternetMessageId,
-        [Parameter(Mandatory)][string]$TargetFolder
+        [Parameter(Mandatory)][string]$TargetFolder,
+        $Item = $null,
+        $TargetFolderObject = $null
     )
 
     $result = [PSCustomObject]@{
@@ -454,8 +462,14 @@ function Move-SiftrMessage {
     }
 
     try {
-        $inbox  = _Get-OutlookInbox
-        $item   = _Find-MessageByInternetId -InternetMessageId $InternetMessageId -Inbox $inbox
+        $inbox  = $null
+        $item   = $Item
+        if (-not $item -or -not $TargetFolderObject) {
+            $inbox = _Get-OutlookInbox
+        }
+        if (-not $item) {
+            $item = _Find-MessageByInternetId -InternetMessageId $InternetMessageId -Inbox $inbox
+        }
 
         if (-not $item) {
             $result.Error = "Message not found in Inbox root"
@@ -463,7 +477,7 @@ function Move-SiftrMessage {
         }
 
         $result.Subject = $item.Subject
-        $folder = _Get-InboxSubfolder -FolderName $TargetFolder -Inbox $inbox
+        $folder = if ($TargetFolderObject) { $TargetFolderObject } else { _Get-InboxSubfolder -FolderName $TargetFolder -Inbox $inbox }
         $item.Move($folder) | Out-Null
         $result.Moved = $true
     }
@@ -483,7 +497,8 @@ function Set-SiftrMessageCategories {
     #>
     param(
         [Parameter(Mandatory)][string]$InternetMessageId,
-        [Parameter(Mandatory)][string[]]$Categories
+        [Parameter(Mandatory)][string[]]$Categories,
+        $Item = $null
     )
 
     $result = [PSCustomObject]@{
@@ -494,8 +509,12 @@ function Set-SiftrMessageCategories {
     }
 
     try {
-        $inbox = _Get-OutlookInbox
-        $item  = _Find-MessageByInternetId -InternetMessageId $InternetMessageId -Inbox $inbox
+        $inbox = $null
+        $item  = $Item
+        if (-not $item) {
+            $inbox = _Get-OutlookInbox
+            $item  = _Find-MessageByInternetId -InternetMessageId $InternetMessageId -Inbox $inbox
+        }
 
         if (-not $item) {
             $result.Error = "Message not found in Inbox root"
@@ -634,15 +653,37 @@ function Invoke-SiftrInboxActions {
     $actionQueue = [System.Collections.Generic.List[object]]::new()
     $queuedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $inbox = $null
-
-    foreach ($group in ($Classifications | Group-Object {
+    $targetFolders = @{}
+    $groups = @($Classifications | Group-Object {
         if ($null -ne $_.PSObject.Properties['ConversationId'] -and -not [string]::IsNullOrWhiteSpace([string]$_.ConversationId)) {
             "conv::$([string]$_.ConversationId)"
         }
         else {
             "msg::$([string]$_.InternetMessageId)"
         }
-    })) {
+    })
+    $conversationIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($group in $groups) {
+        if ($group.Name -like 'conv::*') {
+            [void]$conversationIds.Add($group.Name.Substring(6))
+        }
+    }
+    $conversationTargets = @{}
+    if ($conversationIds.Count -gt 0) {
+        $inbox = _Get-OutlookInbox
+        foreach ($conversationId in $conversationIds) {
+            $conversationTargets[$conversationId] = [System.Collections.Generic.List[object]]::new()
+        }
+        foreach ($item in (_Get-SiftrFolderItemsSnapshot -Folder $inbox)) {
+            if (-not (_Is-SiftrEligibleInboxItem -Item $item)) { continue }
+            $conversationId = [string]$item.ConversationID
+            if (-not $conversationTargets.ContainsKey($conversationId)) { continue }
+            if (-not [string]::IsNullOrWhiteSpace($item.Categories)) { continue }
+            $conversationTargets[$conversationId].Add($item)
+        }
+    }
+
+    foreach ($group in $groups) {
         $seed = $group.Group |
             Sort-Object @{
                 Expression = {
@@ -659,14 +700,10 @@ function Invoke-SiftrInboxActions {
 
         $targets = @()
         if ($group.Name -like 'conv::*') {
-            if ($null -eq $inbox) {
-                $inbox = _Get-OutlookInbox
+            $conversationId = [string]$seed.ConversationId
+            if ($conversationTargets.ContainsKey($conversationId)) {
+                $targets = @($conversationTargets[$conversationId])
             }
-
-            $targets = @(_Get-SiftrConversationInboxItems `
-                -Inbox $inbox `
-                -ConversationId ([string]$seed.ConversationId) `
-                -IncludeRead)
 
             if ($targets.Count -eq 0) {
                 $targets = @($seed)
@@ -719,6 +756,7 @@ function Invoke-SiftrInboxActions {
 
             $actionQueue.Add([PSCustomObject]@{
                 InternetMessageId = $targetId
+                Item = if ($target -and $target.PSObject.TypeNames -notcontains 'System.Management.Automation.PSCustomObject') { $target } else { $null }
                 Tier = $targetTier
                 Categories = if ($targetTier -eq 'CALENDAR') { $null } elseif ($null -ne $seed.PSObject.Properties['Categories']) { $seed.Categories } else { $null }
                 AllowCategoryOverride = $allowCategoryOverride
@@ -766,7 +804,8 @@ function Invoke-SiftrInboxActions {
             else {
                 $categoryResult = Set-SiftrMessageCategories `
                     -InternetMessageId $msg.InternetMessageId `
-                    -Categories $categories
+                    -Categories $categories `
+                    -Item $msg.Item
 
                 $categoryAction = if ($categoryResult.Updated) {
                     'Categorized'
@@ -796,6 +835,12 @@ function Invoke-SiftrInboxActions {
         if (-not $targetFolder) {
             continue
         }
+        if (-not $targetFolders.ContainsKey($targetFolder)) {
+            if ($null -eq $inbox) {
+                $inbox = _Get-OutlookInbox
+            }
+            $targetFolders[$targetFolder] = _Get-InboxSubfolder -FolderName $targetFolder -Inbox $inbox
+        }
 
         if ($WhatIf) {
             $summary.Details.Add([PSCustomObject]@{
@@ -812,7 +857,9 @@ function Invoke-SiftrInboxActions {
 
         $result = Move-SiftrMessage `
             -InternetMessageId $msg.InternetMessageId `
-            -TargetFolder $targetFolder
+            -TargetFolder $targetFolder `
+            -Item $msg.Item `
+            -TargetFolderObject $targetFolders[$targetFolder]
 
         $moveAction = if ($result.Moved) {
             'Moved'

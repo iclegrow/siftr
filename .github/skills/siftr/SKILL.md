@@ -40,8 +40,8 @@ All paths in this file use `$SiftrRoot` as the base:
 
 Check in order (first match wins):
 1. `$env:SIFTR_PERSONAL` environment variable (if set)
-2. `~/.siftr/` (i.e. `~/<path>)
-3. Legacy: `~/<path><personal-data-path>
+2. `~/.siftr/personal-path.txt` pointer file (if present)
+3. `~/.siftr/`
 
 If none exists, run `siftr setup` (see §12) to configure Siftr for the first
 time. The PowerShell module also discovers this path:
@@ -88,8 +88,8 @@ reference manager, directs, and peers by email address.
 3. If the cache is missing or the user says **"siftr refresh org"**, resolve
    the org chart via WorkIQ:
    - Ask WorkIQ: "Who is my manager? Who are my direct reports? Who are my peers
-     (people who share my manager)? Also, who is CEO Person and who are his
-     direct reports?"
+     (people who share my manager)? Also, who is my organization's CEO and who
+     are the CEO's direct reports?"
    - Save the result to `org-cache.json` in the personal-data directory in
      this format:
      ```json
@@ -99,7 +99,7 @@ reference manager, directs, and peers by email address.
        "directs": [{ "name": "...", "email": "..." }],
        "peers": [{ "name": "...", "email": "..." }],
        "slt": {
-         "ceo": { "name": "CEO Person", "email": "..." },
+         "ceo": { "name": "...", "email": "..." },
          "directs": [{ "name": "...", "email": "..." }]
        }
      }
@@ -211,7 +211,7 @@ These combine into a matrix of tier labels:
 - Low and Calendar receive no category (they are moved to subfolders instead)
 
 **External senders:** Mail from non-org domains (the org domain is set in
-`config.json`, e.g. `microsoft.com`) goes through the same classification
+`config.json`, e.g. `contoso.com`) goes through the same classification
 rules as internal mail. If it is clearly spam, classify as ⚪ LOW PRIORITY.
 Otherwise, classify by content — a vendor ask is 🟠, a travel itinerary is
 🟢⬆, etc. No separate Outlook category is needed for external origin; the
@@ -343,7 +343,7 @@ heuristics below.
 
 #### 🟢⬆ PRIORITY INFORMED
 - Sender is in the cached **SLT** section of `org-cache.json` — specifically
-  **CEO Person** or one of his direct reports. This is a universal Phase 1
+  the organization's CEO or one of the CEO's direct reports. This is a universal Phase 1
   rule and should classify as 🟢⬆ even before reading the body.
 - **Reply completing a user request** — the user previously asked for
   something and this reply delivers the answer or confirms the action is done;
@@ -358,6 +358,8 @@ heuristics below.
   asks the user to complete a travel/compliance step, escalate to 🟠
 
 #### 🟢 INFORMED
+- **User-authored mail** that remains in the Inbox should stay at least 🟢
+  unless a higher tier clearly applies
 - Status update emails from known internal senders
 - Emails from manager/directs/peers that are purely informational (no action)
 
@@ -366,6 +368,9 @@ heuristics below.
 - Emails where the user is only on CC with no direct ask
 - Auto-generated notifications that don't require action (build reports,
   digest summaries, etc.)
+- Do **not** use ⚪ for user-authored mail or non-automated mail from the
+  user's manager, directs, or peers unless an explicit Phase 1 low-priority
+  rule matched
 
 **Fallback for external non-spam:** If a non-org-domain email is not spam
 and doesn't match any rule above, classify as 🟢 INFORMED (Inform + Normal).
@@ -972,7 +977,7 @@ lighter output:
      "would you be open to...", "happy to lean in from there").
    - Also treat **question-form asks** as action language when they request
      information or approval from the user (for example: "Do you have a phone
-     number for Project Contact?", "Can you send the contact?", "Are you OK with this?").
+     number for a project contact?", "Can you send the contact?", "Are you OK with this?").
 4. **Apply Outlook actions** (§5) — categories and folder moves.
    When a classification object includes `ConversationId`, the latest
    conversation decision is applied to all still-uncategorized Inbox-root
@@ -1222,6 +1227,12 @@ Write `config.json` to the personal-data directory with all choices:
     "urgent": "Urgent",
     "action": "Action",
     "inform": "Inform"
+  },
+  "sltRoster": {
+    "ceo": { "name": "CEO display name or alias", "identities": ["ceo-alias"] },
+    "directs": [
+      { "name": "Leader display name or alias", "identities": ["leader-alias"] }
+    ]
   },
   "ports": {
     "reviewServer": 8473,
