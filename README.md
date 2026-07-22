@@ -1,6 +1,6 @@
 # Siftr — Email Triage Assistant
 
-> ⚠️ **This repository has moved.** to my enterprise tenant.
+> ⚠️ **This repository has moved** to my enterprise tenant.
 > T his copy is kept only as a historical reference and will be archived (read-only).
 > If you are a Copilot CLI agent or a person cloning this repo please reach out.
 
